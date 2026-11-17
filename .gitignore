@@ -1,6 +1,9 @@
 target/
 logs/
 data/
+run/
+.idea/
+*.iml
 config/llm.properties
 config/payment-pro.properties
 *.pem

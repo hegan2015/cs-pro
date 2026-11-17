@@ -44,12 +44,12 @@ public interface TenantMapper {
 
     // ---- free usage（CAS 原子自增，并发不超发）----
 
-    @Select("SELECT count FROM cs_free_usage WHERE user_id = #{userId} AND day = #{day}")
+    @Select("SELECT used_count FROM cs_free_usage WHERE user_id = #{userId} AND use_day = #{day}")
     Integer freeCount(@Param("userId") String userId, @Param("day") String day);
 
-    @Update("UPDATE cs_free_usage SET count = count + 1 WHERE user_id = #{userId} AND day = #{day} AND count < #{quota}")
+    @Update("UPDATE cs_free_usage SET used_count = used_count + 1 WHERE user_id = #{userId} AND use_day = #{day} AND used_count < #{quota}")
     int incrementFree(@Param("userId") String userId, @Param("day") String day, @Param("quota") int quota);
 
-    @Insert("INSERT INTO cs_free_usage(user_id, day, count) VALUES(#{userId}, #{day}, 1)")
+    @Insert("INSERT INTO cs_free_usage(user_id, use_day, used_count) VALUES(#{userId}, #{day}, 1)")
     int insertFree(@Param("userId") String userId, @Param("day") String day);
 }

@@ -123,7 +123,11 @@ function connectSse() {
   });
   es.addEventListener('message', ev => {
     const m = JSON.parse(ev.data);
-    liveBubble = null;
+    if (liveBubble) {
+      // 流式气泡补上 id，renderMessage 走补元信息路径而非重复追加
+      liveBubble.closest('.msg').id = 'msg-' + m.id;
+      liveBubble = null;
+    }
     renderMessage(m);
     scrollBottom();
   });

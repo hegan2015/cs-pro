@@ -5,7 +5,11 @@ spring:
   application:
     name: cs-pro
   config:
-    import: "optional:file:./config/"
+    import:
+      - "optional:file:./config/llm.properties"
+      - "optional:file:./config/payment-pro.properties"
+      - "optional:file:${user.home}/.config/cs-pro/llm.properties"
+      - "optional:file:${user.home}/.config/cs-pro/payment-pro.properties"
   datasource:
     url: jdbc:h2:file:${DATA_DIR:./data}/cs;MODE=MySQL;DATABASE_TO_LOWER=TRUE
     driver-class-name: org.h2.Driver

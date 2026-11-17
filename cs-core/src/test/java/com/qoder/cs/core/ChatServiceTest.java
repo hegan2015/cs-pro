@@ -34,7 +34,7 @@ class ChatServiceTest {
 
     @Test
     void unsubscribedGetsFaqDirectAnswer() {
-        SessionDTO s = newSession("UT-CHAT-" + UUID.randomUUID());
+        SessionDTO s = newSession("UT-CHAT-" + UUID.randomUUID().toString().substring(0, 8));
         MessageDTO bot = chat.sendMessage(s.getId(), "打车怎么计价？");
         assertEquals("BOT", bot.getRole());
         assertTrue(bot.getContent().contains("起步价"));
@@ -44,7 +44,7 @@ class ChatServiceTest {
 
     @Test
     void freeQuotaExhaustionReturnsConflict() {
-        SessionDTO s = newSession("UT-CHAT-" + UUID.randomUUID());
+        SessionDTO s = newSession("UT-CHAT-" + UUID.randomUUID().toString().substring(0, 8));
         for (int i = 0; i < 5; i++) {
             chat.sendMessage(s.getId(), "退款多久到账？");
         }
@@ -54,7 +54,7 @@ class ChatServiceTest {
 
     @Test
     void subscribedUnlimitedWithLlmFallback() {
-        String userId = "UT-CHAT-" + UUID.randomUUID();
+        String userId = "UT-CHAT-" + UUID.randomUUID().toString().substring(0, 8);
         TenantDTO tenant = subscriptions.createTenant(
                 "ut-chat-" + UUID.randomUUID().toString().substring(0, 8), "对话单测租户");
         SessionCreateRequest req = new SessionCreateRequest();
@@ -73,7 +73,7 @@ class ChatServiceTest {
 
     @Test
     void endedSessionRejectsMessages() {
-        SessionDTO s = newSession("UT-CHAT-" + UUID.randomUUID());
+        SessionDTO s = newSession("UT-CHAT-" + UUID.randomUUID().toString().substring(0, 8));
         chat.endSession(s.getId());
         assertEquals("ENDED", chat.getSession(s.getId()).getStatus());
         BizException e = assertThrows(BizException.class, () -> chat.sendMessage(s.getId(), "你好"));
@@ -85,7 +85,7 @@ class ChatServiceTest {
     void merchantDefaultsToPaymentProTenant() {
         SessionCreateRequest req = new SessionCreateRequest();
         req.setUserRole("MERCHANT");
-        req.setUserId("UT-M-" + UUID.randomUUID());
+        req.setUserId("UT-M-" + UUID.randomUUID().toString().substring(0, 8));
         SessionDTO s = chat.createSession(req);
         assertEquals("payment-pro", s.getTenantCode());
     }

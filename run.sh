@@ -37,8 +37,8 @@ for ((i=0; i<90; i++)); do
     echo "==> 订阅:     http://127.0.0.1:$PORT/subscription.html"
     echo "==> 工作台:   http://127.0.0.1:$PORT/agent.html"
     echo "==> 管理后台: http://127.0.0.1:$PORT/admin.html（令牌默认 cs-admin）"
-    if [ ! -f config/llm.properties ]; then
-      echo "==> 提示: 未配置 LLM Key，当前为 FAQ 知识库模式（config/llm.properties 可启用智能助手）"
+    if [ ! -f config/llm.properties ] && [ ! -f "$HOME/.config/cs-pro/llm.properties" ]; then
+      echo "==> 提示: 未配置 LLM Key，当前为 FAQ 知识库模式（~/.config/cs-pro/llm.properties 可启用智能助手）"
     fi
     exit 0
   fi

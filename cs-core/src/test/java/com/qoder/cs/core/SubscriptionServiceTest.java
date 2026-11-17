@@ -90,7 +90,7 @@ class SubscriptionServiceTest {
 
     @Test
     void freeQuotaNeverOverspendsUnderConcurrency() throws Exception {
-        String userId = "UT-USER-" + UUID.randomUUID();
+        String userId = "UT-USER-" + UUID.randomUUID().toString().substring(0, 8);
         int n = 20;
         ExecutorService pool = Executors.newFixedThreadPool(n);
         CountDownLatch start = new CountDownLatch(1);

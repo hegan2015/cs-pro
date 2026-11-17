@@ -101,10 +101,10 @@ CREATE TABLE IF NOT EXISTS cs_llm_call (
 CREATE INDEX IF NOT EXISTS idx_llm_call_created ON cs_llm_call (created_at);
 
 CREATE TABLE IF NOT EXISTS stats_daily (
-    day    VARCHAR(10) NOT NULL,
-    metric VARCHAR(32) NOT NULL,
-    value  BIGINT      NOT NULL,
-    PRIMARY KEY (day, metric)
+    stat_day   VARCHAR(10) NOT NULL,
+    metric     VARCHAR(32) NOT NULL,
+    stat_value BIGINT      NOT NULL,
+    PRIMARY KEY (stat_day, metric)
 );
 
 CREATE TABLE IF NOT EXISTS idempotent_record (
@@ -163,8 +163,8 @@ CREATE TABLE IF NOT EXISTS cs_sub_order (
 CREATE INDEX IF NOT EXISTS idx_sub_order_status ON cs_sub_order (status, created_at);
 
 CREATE TABLE IF NOT EXISTS cs_free_usage (
-    user_id VARCHAR(32) NOT NULL,
-    day     VARCHAR(10) NOT NULL,
-    count   INT         NOT NULL DEFAULT 0,
-    PRIMARY KEY (user_id, day)
+    user_id    VARCHAR(32) NOT NULL,
+    use_day    VARCHAR(10) NOT NULL,
+    used_count INT         NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, use_day)
 );

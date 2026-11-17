@@ -88,7 +88,10 @@ public class ChatService {
 
     public SessionDTO endSession(String id) {
         SessionDTO s = getSession(id);
-        if ("ACTIVE".equals(s.getStatus()) && sessionMapper.end(id, System.currentTimeMillis(), s.getIntent()) == 0) {
+        if (!"ACTIVE".equals(s.getStatus())) {
+            throw BizException.conflict("会话已结束");
+        }
+        if (sessionMapper.end(id, System.currentTimeMillis(), s.getIntent()) == 0) {
             throw BizException.conflict("会话已结束");
         }
         return sessionMapper.selectById(id);
@@ -166,6 +169,8 @@ public class ChatService {
                 messages.add(ChatMessage.assistantToolCalls(result.getToolCalls()));
                 for (ToolCall call : result.getToolCalls()) {
                     String toolResult = tools.execute(session, call.getName(), call.getArgumentsJson());
+                    log.info("LLM tool session={} name={} ok={}", session.getId(), call.getName(),
+                            !toolResult.startsWith("{\"error\""));
                     messages.add(ChatMessage.tool(call.getId(), toolResult));
                     if ("create_ticket".equals(call.getName()) && toolResult.contains("\"draft\":true")) {
                         draft = toolResult;
@@ -198,6 +203,9 @@ public class ChatService {
             call.setCompletionTokens(r.getCompletionTokens());
             call.setLatencyMs(System.currentTimeMillis() - t0);
             llmCallMapper.insert(call);
+            log.info("LLM OK session={} model={} tokens={} latencyMs={} toolCalls={}",
+                    sessionId, call.getModel(), r.getPromptTokens() + r.getCompletionTokens(),
+                    call.getLatencyMs(), r.hasToolCalls() ? r.getToolCalls().size() : 0);
             return r;
         } catch (LlmException e) {
             call.setStatus("ERROR");
@@ -304,7 +312,7 @@ public class ChatService {
         return sb.toString();
     }
 
-    static String classifyIntent(String text) {
+    public static String classifyIntent(String text) {
         if (text.contains("计价") || text.contains("价格") || text.contains("费用") || text.contains("多少钱")) {
             return "计价";
         }

@@ -1,6 +1,6 @@
 # cs-pro 智能客服系统设计方案
 
-版本 v0.3（方案设计稿，实现中）｜ 2026-11-17
+版本 v1.0.0（已交付 · DeepSeek 联调通过）｜ 2026-11-17
 定位：为 ride-pro（打车）与 payment-pro（支付）提供统一的智能客服入口，覆盖「租户订阅准入 → 机器人自动问答（LLM）→ 业务查询 → 工单与统计」闭环。
 
 > 技术选型已拍板（§1.4）；订阅模型已拍板（§1.5，详见 §3A）。剩余待确认事项见 §12。
@@ -176,8 +176,9 @@ cs-pro (parent, pom)
 | pricing_rules | — | ride `GET /api/pricing/rules` | 计价规则解释 |
 | query_pp_trade | orderId（pp 订单号 O*） | payment OpenAPI `trade.query`（8443 验签） | 交易订单+支付单状态/退款进度 |
 | query_pp_balance | accountId | payment OpenAPI `account.balance`（8443 验签） | pp 账户余额（商户场景） |
-| search_kb | query | 本地 cs-kb 检索 | FAQ 兜底（也可由 RAG 前置注入代替） |
 | create_ticket | category, summary, orderId? | 本地 cs-core 工单 | LLM 判定无法解决时主动建单（需用户确认，见 §8.3） |
+
+> KB 检索不暴露为工具：由 RAG 前置注入 Top3 代替（减少工具轮次，实现已按此落地）。
 
 **工具安全三原则**：
 1. 身份参数（userId/passengerId/driverId）**不由 LLM 决定**，由会话上下文服务端注入，LLM 只能传业务参数（orderId 等），且 orderId 归属校验（订单 passenger_id/driver_id 必须匹配会话身份，防越权查他人订单）。
@@ -195,11 +196,10 @@ cs-pro (parent, pom)
 
 ```
 OPEN（机器人建单/用户手动建单/工作台代建）
-  → ASSIGNED（管理员分派处理人，文本字段，无账号体系）
-  → PROCESSING（处理中，可追加处理记录）
+  → PROCESSING（管理员分派处理人 assignee 文本字段，无账号体系；可追加处理记录）
   → RESOLVED（处理完成，填解决方案）
   → CLOSED（用户确认或 7 天自动关闭，调度器驱动）
-任意非终态 → CANCELLED（用户撤单）
+OPEN/PROCESSING → CANCELLED（仅本人撤单）
 ```
 
 - 全部流转 CAS（`WHERE status=旧态`），对齐两系统状态机风格。
@@ -247,7 +247,7 @@ OPEN（机器人建单/用户手动建单/工作台代建）
 | 业务查询工具 | ❌ | ✅ |
 | 工单创建/查询 | ✅（求助通道不付费墙） | ✅ |
 
-- 免费额度计数 `cs_free_usage`（PK=user_id+day），`MERGE + CAS count<quota` 原子自增，并发不超发；跨天自然重置。
+- 免费额度计数 `cs_free_usage`（PK=user_id+use_day），CAS `UPDATE used_count<quota` 原子自增 + 首条 INSERT（唯一键兜底），并发不超发；跨天自然重置。
 - 订阅剩余天数可叠加：续订 newExpire = max(now, 当前expire_at) + days。
 
 ### 3A.3 激活码兑换（默认通道，零依赖）
@@ -281,7 +281,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | cs_subscription | tenant_id PK, plan_name, days, status(ACTIVE/EXPIRED 展示态), start_at, expire_at, source(CODE/PAY/ADMIN), updated_at |
 | cs_activation_code | code PK, days, status(UNUSED/USED), used_by_tenant, used_at, created_at |
 | cs_sub_order | id(SO+seq), tenant_id, amount, days, request_id UNIQUE, pp_order_id, pp_payment_id, status(PENDING/PAID/ACTIVATED/FAILED/CLOSED), created_at, paid_at |
-| cs_free_usage | PK(user_id, day), count |
+| cs_free_usage | PK(user_id, use_day), used_count |
 
 ---
 
@@ -297,8 +297,8 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | cs_ticket_note | id, ticket_id, author, content, created_at | 处理记录追加 |
 | cs_kb | id(K+seq), question, answer CLOB, category, keywords, enabled, hit_count, updated_at | FAQ |
 | cs_rating | PK(target_type+target_id), score, comment, created_at | 会话/工单评价，一目标一评 |
-| cs_llm_call | id, session_id, model, prompt_tokens, completion_tokens, latency_ms, status(OK/FAIL/FALLBACK), error, created_at | 用量与故障审计 |
-| stats_daily | PK(day+metric), value | 每日快照 |
+| cs_llm_call | id, session_id, model, prompt_tokens, completion_tokens, latency_ms, status(OK/ERROR), error, created_at | 用量与故障审计（降级/熔断另记 WARN 日志） |
+| stats_daily | PK(stat_day+metric), stat_value | 每日快照（列名避开 H2 保留字 DAY/VALUE） |
 | idempotent_record | request_id PK, biz_type, result_json, created_at | 建单等写入口幂等（同两系统模式） |
 
 ---
@@ -308,7 +308,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 ### 5.1 协议与供应商
 
 - 统一走 **OpenAI 兼容 Chat Completions 协议**（`/v1/chat/completions`，支持 tools/tool_choice/stream），一套客户端适配 OpenAI / DeepSeek / 通义 / Kimi / 本地 Ollama 等。
-- 配置 `config/llm.properties`：`baseUrl / apiKey / model / temperature / maxTokens / timeoutMs`。apiKey 只存配置文件（gitignore），不出现在任何 DTO/日志。
+- 配置 `~/.config/cs-pro/llm.properties`（仓库外，chmod 600）：`baseUrl / apiKey / model / temperature / maxTokens / timeoutMs`。apiKey 只存配置文件，不出现在任何 DTO/日志；兼容仓库内 `config/llm.properties`（gitignore）。
 - 流式：JDK HttpClient 读 SSE 行 → 网关以 SSE 转发前端；工具调用轮用非流式（简化解析），最终回答轮流式。
 
 ### 5.2 降级策略（LLM 不可用时系统仍可运行）
@@ -318,7 +318,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | 未配置 apiKey | 启动不报错；对话走**本地 FAQ 检索直答**（Top1 命中直接返回答案 + 「相似问题」列表），工单/统计/业务查询页全部可用 |
 | 调用超时/5xx | 重试 1 次（仅幂等的对话生成，无资金副作用）→ 仍失败则 FAQ 兜底 + 提示「智能助手暂不可用，已为您转知识库回答」 |
 | 工具调用失败 | 结果置错误说明回填 LLM，由其引导；业务系统全挂时建议建单 |
-| 连续失败 ≥5 次 | 熔断 60s（内存计数），期间直接 FAQ 兜底，cs_llm_call 记 FALLBACK |
+| 连续失败 ≥5 次 | 熔断 60s（内存计数），期间直接 FAQ 兜底，记 WARN 日志（cs_llm_call 逐次记 OK/ERROR） |
 
 > 这保证「零依赖开箱即用」不被 LLM 破坏：没有 Key 也能演示完整工单/统计/查询闭环，有 Key 则升级为智能问答。
 
@@ -332,7 +332,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 
 ## 6. 接口契约（REST，cs-gateway :8096）
 
-成功 body 为 data，失败 `{error, code}`，错误码沿用 A0400/A0404/A0409/B0001/B0002/C0001 三段式。
+成功 body 为 data，失败 Result `{code, message}`，错误码沿用 A0400/A0404/A0409/B0001/B0002/C0001 三段式（HTTP 200/400/404/409/400/500/502）。
 
 ### 6.1 用户端
 
@@ -347,7 +347,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | POST | /api/tickets | body{sessionId?, category, summary, orderId?} 用户手动建单 |
 | GET | /api/tickets?userId= | 我的工单列表（服务端按会话身份过滤） |
 | GET | /api/tickets/{id} | 工单详情 + 处理记录 |
-| POST | /api/tickets/{id}/cancel | 撤单（仅 OPEN/ASSIGNED） |
+| POST | /api/tickets/{id}/cancel | 撤单（仅 OPEN/PROCESSING，本人） |
 | GET | /api/kb/search?q= | FAQ 检索（降级直答与「猜你想问」） |
 | GET | /api/subscription?tenantCode= | 订阅状态：{subscribed, expireAt, plan, freeUsage:{used,limit}, payEnabled} |
 | POST | /api/subscription/redeem | body{tenantCode, code} 激活码兑换（CAS 一码一用） |
@@ -443,7 +443,7 @@ open http://127.0.0.1:8096/
 ```
 
 - JAVA_HOME 探测逻辑复用两系统（corretto-18 优先，release=17）。
-- 日志 logback 文件 `logs/cs-gateway.log`，pattern 含 traceId（TraceWebFilter 入口生成，透传到业务查询出站头 X-Trace-Id，可跨系统检索）。
+- 日志 logback 文件 `logs/cs-gateway.log`，pattern 含 traceId（TraceWebFilter 入口生成，透传到业务查询出站头 X-Trace-Id，可跨系统检索）。LLM 链路留痕：`LLM OK session= model= tokens= latencyMs= toolCalls=`（成功调用）、`LLM tool session= name= ok=`（工具执行）、`LLM 降级 FAQ`（WARN，回落原因）、`熔断`（WARN），与 cs_llm_call 审计一一对应。
 - ride/payment 未启动时 cs-pro 照常启动（业务查询降级），健康页标红对应系统。
 - 三系统同跑端口核验：8096/8090/8080 互不冲突。
 - **pp OpenAPI 入驻（可选）**：`payment-pro ./run.sh` → `cs-pro ./integrate-payment.sh`（注册 cs-pro 商户/取 appId+appSecret/拷证书/写配置）→ 重启 cs-pro 生效；未入驻时 pp 查询工具自动禁用，其余功能不受影响。
@@ -482,7 +482,7 @@ open http://127.0.0.1:8096/
 
 技术选型已确认（§1.4），剩余：
 
-1. **LLM 供应商与 Key**：用哪家（OpenAI/DeepSeek/通义/Kimi/本地 Ollama）？Key 由你提供写入 `config/llm.properties`（gitignore）。未提供前按无 Key 降级模式实现与验证。
+1. **LLM 供应商与 Key**：已接 DeepSeek（deepseek-chat，OpenAI 兼容协议），Key 存 `~/.config/cs-pro/llm.properties`（仓库外、chmod 600）；换供应商改 base-url/model。无 Key 自动降级模式不变。
 2. **端口 8096**：原拟 8095 已被并行交付的 yiwu-pro 占用（2026-11-17 核实监听），改用 8096（CS_PORT 可覆盖）。
 3. **工单处理人**：本期用文本 assignee（无客服账号体系）是否够用？
 4. 方案确认后是否进入实现（实现将遵循零依赖 + 实际启动验证 + 浏览器实测的交付标准）。

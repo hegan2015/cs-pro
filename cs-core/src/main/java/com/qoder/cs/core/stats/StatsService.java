@@ -120,9 +120,9 @@ public class StatsService {
         String fromDay = today.minusDays(days - 1L).format(DAY);
         Map<String, Map<String, Long>> snapshot = new LinkedHashMap<>();
         for (Map<String, Object> row : statsMapper.range(fromDay, today.format(DAY))) {
-            String day = String.valueOf(row.get("day"));
+            String day = String.valueOf(row.get("stat_day"));
             String metric = String.valueOf(row.get("metric"));
-            long value = ((Number) row.get("value")).longValue();
+            long value = ((Number) row.get("stat_value")).longValue();
             snapshot.computeIfAbsent(day, k -> new LinkedHashMap<>()).put(metric, value);
         }
         List<Map<String, Object>> out = new ArrayList<>();

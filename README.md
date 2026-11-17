@@ -1,10 +1,10 @@
 # cs-pro 智能客服系统设计文档
 
-版本 v0.3（实现中）｜ 2026-11-17 ｜ 完整设计见 [DESIGN.md](DESIGN.md)（字段级数据字典、接口契约、安全细节以 DESIGN 为准）
+版本 v1.0.0（已交付 · DeepSeek 联调通过）｜ 2026-11-17 ｜ 完整设计见 [DESIGN.md](DESIGN.md)（字段级数据字典、接口契约、安全细节以 DESIGN 为准）
 
 定位：为 ride-pro（打车）与 payment-pro（支付）提供**统一智能客服入口**，覆盖「租户订阅准入 → 机器人自动问答（LLM）→ 业务只读查询 → 工单与统计」闭环。
 
-> 状态说明：技术选型与订阅模型已拍板（DESIGN §1.4/§1.5），代码实现中；本文档与 DESIGN 同步维护。LLM 供应商与 Key 待用户提供，未提供前按**无 Key 降级模式**实现与验证（FAQ 直答 + 工单/统计/查询全闭环可用）。
+> 状态说明：已交付验证（28/28 单测 + 55/55 REST 冒烟 + 五页面浏览器实测），DeepSeek 真实联调通过（问答/工具查单/越权拒绝/代办退款拒绝）。LLM Key 存仓库外 `~/.config/cs-pro/llm.properties`；无 Key 时自动按**降级模式**运行（FAQ 直答 + 工单/统计/查询全闭环可用）。本文档与 DESIGN 同步维护。
 
 ## 1. 目标与硬约束
 
@@ -69,7 +69,7 @@ Maven 六模块（单运行进程 cs-gateway）：
 用户消息落库 → 组装上下文（system prompt + 最近 10 轮 + KB Top3 命中）→ LLM 携带工具定义调用 → tool_calls 执行循环（最多 3 轮防死循环，biz 适配器只读查询）→ 机器人消息落库（含引用来源）→ SSE 流式推送 → 意图标签落库。
 
 ### 4.2 Function Calling 工具（全部只读，白名单硬编码）
-`query_ride_order` / `list_ride_orders` / `query_wallet` / `query_ledger` / `query_withdraws` / `pricing_rules`（ride REST）；`query_pp_trade` / `query_pp_balance`（payment OpenAPI 验签）；`search_kb`（本地）；`create_ticket`（**返回草稿卡片，用户确认才落单**，防幻觉建单）。
+`query_ride_order` / `list_ride_orders` / `query_wallet` / `query_ledger` / `query_withdraws` / `pricing_rules`（ride REST）；`query_pp_trade` / `query_pp_balance`（payment OpenAPI 验签）；`create_ticket`（**返回草稿卡片，用户确认才落单**，防幻觉建单）。KB 检索不暴露为工具，由 RAG 前置注入 Top3 代替。
 
 工具安全三原则：身份参数服务端注入（LLM 不可决定）+ orderId 归属校验（防越权，不匹配返回 A0404 不泄漏存在性）；无写工具；结果脱敏后进 prompt（手机号掩码、卡号前 6 后 4）。
 
@@ -77,7 +77,7 @@ Maven 六模块（单运行进程 cs-gateway）：
 中文 n-gram 倒排 + BM25 打分，Top3 注入 system prompt；KB 变更即重建索引。种子 FAQ 从两系统业务规则提炼（取消费、免密扣款、提现冻结语义、退款手续费比例等高频问题）。演进方向：embedding 向量检索。
 
 ### 4.4 工单生命周期
-`OPEN → ASSIGNED → PROCESSING → RESOLVED → CLOSED`（用户确认或 7 天自动关闭），任意非终态可 CANCELLED。全部流转 CAS；建单幂等 `request_id` 唯一键（LLM 用确定性键 `TICKET-{sessionId}-{seq}`）；携带会话快照/关联订单/分类/优先级/来源；满意度 1–5 星（PK 防重）。
+`OPEN → PROCESSING → RESOLVED → CLOSED`（分派即进入 PROCESSING；用户确认或 7 天自动关闭），OPEN/PROCESSING 可本人撤单 CANCELLED。全部流转 CAS；建单幂等 `request_id` 唯一键（LLM 用确定性键 `TICKET-{sessionId}-{seq}`）；携带会话快照/关联订单/分类/优先级/来源；满意度 1–5 星（PK 防重）。
 
 ### 4.5 统计报表
 会话量/消息量、机器人解决率、转工单率与分类分布、平均响应时长、满意度、高频问题 TopN、LLM 用量（token/调用/失败/降级，cs_llm_call 留痕）。SQL 聚合 + stats_daily 每日快照（调度 MERGE 幂等），看板读快照 + 实时增量。
@@ -100,14 +100,14 @@ Maven 六模块（单运行进程 cs-gateway）：
 
 ## 6. LLM 适配与降级
 
-- 配置 `config/llm.properties`（baseUrl/apiKey/model/temperature/maxTokens/timeoutMs，**gitignore，Key 不入日志/DTO**）。
+- 配置 `~/.config/cs-pro/llm.properties`（**仓库外**，chmod 600；baseUrl/apiKey/model/temperature/maxTokens/timeoutMs，Key 不入日志/DTO；兼容仓库内 `config/llm.properties`，gitignore）。
 - 流式：工具调用轮非流式（简化解析），最终回答轮流式 SSE 转发。
-- **降级策略（无 Key 系统照常运行）**：未配置 → FAQ 检索直答 + 相似问题；超时/5xx → 重试 1 次 → FAQ 兜底提示；工具失败 → 错误说明回填 LLM 引导；连续失败 ≥5 → 熔断 60s（cs_llm_call 记 FALLBACK）。
+- **降级策略（无 Key 系统照常运行）**：未配置 → FAQ 检索直答 + 相似问题；超时/5xx → 重试 1 次 → FAQ 兜底提示；工具失败 → 错误说明回填 LLM 引导；连续失败 ≥5 → 熔断 60s（降级/熔断记 WARN 日志，cs_llm_call 逐次记 OK/ERROR）。
 - Prompt 治理：行为边界（不承诺退款、不编造数据、资金操作引导官方端）+ 防注入声明；**工具白名单 + 身份服务端注入是硬防线，prompt 是软防线**。
 
 ## 7. 接口与前端
 
-REST 契约详见 DESIGN §6。成功 body 为 data，失败 `{error, code}`（A0400/A0404/A0409/B0001/B0002/C0001 三段式）。
+REST 契约详见 DESIGN §6。成功 body 为 data，失败 Result `{code, message}`（A0400/A0404/A0409/B0001/B0002/C0001 三段式）。
 
 - 用户端：会话/消息/SSE 流/评价/工单/KB 检索/订阅状态/激活码兑换/支付开通。
 - 管理端（`/api/admin/*`，X-Admin-Token，默认 cs-admin）：总览/趋势/会话审计/工单池流转/FAQ 管理/LLM 审计/健康探活/播种/租户管理/激活码管理/订阅单审计。
@@ -145,8 +145,8 @@ open http://127.0.0.1:8096/
 ```
 
 - ride/payment 未启动时 cs-pro 照常启动（业务查询降级，健康页标红）。
-- 日志 `logs/cs-gateway.log` 含 traceId（透传 X-Trace-Id 可跨系统检索）。
-- LLM 配置：复制 `config/llm.properties.example` 为 `config/llm.properties` 填入 Key（不入库）。
+- 日志 `logs/cs-gateway.log` 含 traceId（透传 X-Trace-Id 可跨系统检索）。LLM 判读：`grep 'LLM OK'`＝真实调用成功（model/tokens/耗时/工具数）；`grep 'LLM tool'`＝工具查单留痕；`grep 'LLM 降级'`＝回落 FAQ（WARN 带原因）；`grep '熔断'`＝连续失败熔断。与 cs_llm_call 审计（管理端 LLM 审计页）一一对应。
+- LLM 配置：复制 `config/llm.properties.example` 为 `~/.config/cs-pro/llm.properties` 填入 Key（仓库外、不入库）。
 
 ## 10. 验证方案（实现阶段执行）
 
@@ -165,7 +165,7 @@ open http://127.0.0.1:8096/
 
 ## 12. 待拍板事项
 
-1. **LLM 供应商与 Key**：用户提供后写入 `config/llm.properties`；未提供前按无 Key 降级模式实现与验证。
+1. **LLM 供应商与 Key**：已接 DeepSeek（deepseek-chat），Key 在 `~/.config/cs-pro/llm.properties`（仓库外）；换供应商改 base-url/model 即可（OpenAI 兼容协议）。无 Key 自动降级模式不变。
 2. 工单处理人本期用文本 assignee（无客服账号体系）。
 3. 端口 8096 已确认（8095 被 yiwu-pro 占用）。
 
@@ -178,7 +178,7 @@ cs-pro/
 ├── integrate-payment.sh       # payment-pro OpenAPI 一键入驻（可选）
 ├── DESIGN.md                  # 完整设计（权威）
 ├── README.md                  # 本文档（与 DESIGN 同步）
-├── config/                    # llm.properties.example（实际配置 gitignore）
+├── config/                    # llm.properties.example（实际 Key 配置放仓库外 ~/.config/cs-pro/）
 ├── cs-common / cs-facade / cs-kb / cs-llm / cs-core / cs-gateway
 └── data/ · logs/              # 运行时产物（gitignore，数据只增不删）
 ```

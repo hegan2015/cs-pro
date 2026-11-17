@@ -22,7 +22,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** pp 通道以桩替代：验证下单→回查终态→同事务开通，且重放不重复加天数。 */
-@SpringBootTest(classes = TestApp.class)
+@SpringBootTest(classes = {TestApp.class, SubscriptionPayServiceTest.StubConfig.class})
 class SubscriptionPayServiceTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -50,7 +50,7 @@ class SubscriptionPayServiceTest {
                 @Override
                 public JsonNode callSubscriptionPay(String method, Map<String, Object> params) {
                     if ("trade.create".equals(method)) {
-                        return JSON.createObjectNode().put("id", "O-STUB-" + UUID.randomUUID());
+                        return JSON.createObjectNode().put("id", "O-STUB-" + UUID.randomUUID().toString().substring(0, 8));
                     }
                     return JSON.createObjectNode()
                             .set("payment", JSON.createObjectNode().put("id", "P-STUB-1").put("status", "SUCCESS"));
