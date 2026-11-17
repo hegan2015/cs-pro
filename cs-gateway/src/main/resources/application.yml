@@ -21,6 +21,11 @@ spring:
       schema-locations: classpath:schema.sql
   jackson:
     default-property-inclusion: non_null
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
 
 mybatis:
   configuration:
