@@ -1,0 +1,22 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:cstest;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+
+cs:
+  free:
+    daily-quota: 5
+
+logging:
+  level:
+    com.qoder.cs: warn

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理后台 · cs-pro</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<div class="topbar">
+  <h1>管理后台</h1>
+  <span class="spacer"></span>
+  <a href="agent.html">工单工作台</a>
+  <a href="index.html">首页</a>
+</div>
+<div class="wrap">
+  <div class="card">
+    <div class="row">
+      <div style="flex:1;min-width:200px">
+        <label>管理令牌（X-Admin-Token）</label>
+        <input id="token" type="password" placeholder="默认 cs-admin">
+      </div>
+      <button onclick="saveToken();refresh()" style="align-self:flex-end">保存并刷新</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button data-tab="overview" class="active" onclick="switchTab('overview')">运营总览</button>
+    <button data-tab="sessions" onclick="switchTab('sessions')">会话审计</button>
+    <button data-tab="kb" onclick="switchTab('kb')">FAQ 知识库</button>
+    <button data-tab="llm" onclick="switchTab('llm')">LLM 审计</button>
+    <button data-tab="sub" onclick="switchTab('sub')">租户与订阅</button>
+  </div>
+
+  <div id="tab-overview">
+    <div class="card"><div class="grid cols-4" id="statCards"></div></div>
+    <div class="grid cols-2">
+      <div class="card"><h2>近 7 天趋势</h2><div id="trend"></div></div>
+      <div class="card"><h2>系统状态</h2><div id="sysStatus"></div></div>
+    </div>
+    <div class="card"><h2>热门 FAQ</h2><div id="hotFaq"></div></div>
+  </div>
+
+  <div id="tab-sessions" style="display:none">
+    <div class="card">
+      <h2>会话列表</h2>
+      <div class="row" style="margin-bottom:10px">
+        <select id="sessStatus" onchange="loadSessions()" style="max-width:160px">
+          <option value="">全部状态</option><option value="ACTIVE">进行中</option><option value="ENDED">已结束</option>
+        </select>
+      </div>
+      <div id="sessionList"></div>
+    </div>
+    <div class="card" id="sessMsgCard" style="display:none">
+      <h2>会话消息 <span class="mono" id="sessMsgId"></span></h2>
+      <div id="sessMsgs"></div>
+    </div>
+  </div>
+
+  <div id="tab-kb" style="display:none">
+    <div class="card">
+      <h2>新增 FAQ</h2>
+      <div class="grid cols-2">
+        <div><label>问题</label><input id="kbQ"></div>
+        <div><label>分类</label><input id="kbCat" placeholder="计价/支付/退款/提现/订阅/其他"></div>
+      </div>
+      <label style="margin-top:8px">答案</label><textarea id="kbA"></textarea>
+      <label style="margin-top:8px">关键词（逗号分隔，可选）</label><input id="kbKw">
+      <div style="margin-top:10px"><button onclick="kbCreate()">新增</button></div>
+    </div>
+    <div class="card"><h2>FAQ 列表 <span class="muted" id="kbCount"></span></h2><div id="kbList"></div></div>
+  </div>
+
+  <div id="tab-llm" style="display:none">
+    <div class="card">
+      <h2>LLM 调用记录</h2>
+      <div class="row" style="margin-bottom:10px">
+        <select id="llmStatus" onchange="loadLlm()" style="max-width:160px">
+          <option value="">全部</option><option value="OK">成功</option><option value="ERROR">失败</option>
+        </select>
+      </div>
+      <div id="llmList"></div>
+    </div>
+  </div>
+
+  <div id="tab-sub" style="display:none">
+    <div class="card">
+      <h2>租户订阅状态</h2>
+      <div id="subList"></div>
+      <div class="row" style="margin-top:12px">
+        <input id="grantTenant" placeholder="租户 ID（如 TN1）" style="max-width:160px">
+        <input id="grantDays" type="number" value="30" style="max-width:100px">
+        <button onclick="grant()">手动开通/续订（天）</button>
+      </div>
+    </div>
+    <div class="grid cols-2">
+      <div class="card">
+        <h2>生成激活码</h2>
+        <div class="row">
+          <input id="codeDays" type="number" value="30" style="max-width:100px">
+          <input id="codeCount" type="number" value="3" style="max-width:100px">
+          <button onclick="genCodes()">生成</button>
+        </div>
+        <div id="codeList" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h2>新建租户</h2>
+        <div class="row">
+          <input id="newCode" placeholder="编码（字母数字_-）" style="flex:1">
+          <input id="newName" placeholder="名称" style="flex:1">
+          <button onclick="createTenant()">创建</button>
+        </div>
+        <h2 style="margin-top:14px">订阅支付单</h2>
+        <div id="subOrders"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+function saveToken() {
+  const t = document.getElementById('token').value.trim();
+  if (t) localStorage.setItem(CS.tokenKey, t);
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === name));
+  ['overview', 'sessions', 'kb', 'llm', 'sub'].forEach(t =>
+    document.getElementById('tab-' + t).style.display = t === name ? '' : 'none');
+  refresh();
+}
+
+async function refresh() {
+  const active = document.querySelector('.tabs button.active').dataset.tab;
+  try {
+    if (active === 'overview') await loadOverview();
+    if (active === 'sessions') await loadSessions();
+    if (active === 'kb') await loadKb();
+    if (active === 'llm') await loadLlm();
+    if (active === 'sub') await loadSub();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function loadOverview() {
+  const d = await CS.get('/api/admin/overview');
+  const cards = [
+    [d.sessions.total, '会话总数'], [d.sessions.today, '今日会话'],
+    [d.messages.total, '消息总数'], [d.messages.avgBotLatencyMs + 'ms', '平均响应'],
+    [d.tickets.open + d.tickets.processing, '待处理工单'], [d.tickets.today, '今日工单'],
+    [d.kb.hits, 'FAQ 命中'], [d.llm.tokens, 'LLM Tokens'],
+  ];
+  document.getElementById('statCards').innerHTML = cards.map(([n, l]) =>
+    `<div class="stat"><div class="num">${n}</div><div class="lbl">${l}</div></div>`).join('');
+  const trend = await CS.get('/api/admin/stats/daily?days=7');
+  document.getElementById('trend').innerHTML = '<table><tr><th>日期</th><th>会话</th><th>消息</th><th>工单</th></tr>' +
+    trend.map(r => `<tr><td>${r.day}</td><td>${r.sessions}</td><td>${r.messages}</td><td>${r.tickets}</td></tr>`).join('') + '</table>';
+  const up = d.upstream;
+  document.getElementById('sysStatus').innerHTML = `
+    <p style="font-size:13px;line-height:2">
+      LLM：${d.llm.available ? '<span class="badge ok">可用</span>' : '<span class="badge warn">FAQ 降级模式</span>'}（${CS.esc(d.llm.model)}）<br>
+      ride-pro：${up.ridePro ? '<span class="badge ok">在线</span>' : '<span class="badge err">离线</span>'}<br>
+      payment-pro OpenAPI：${up.paymentPro ? '<span class="badge ok">已配置</span>' : '<span class="badge gray">未入驻</span>'}<br>
+      订阅租户：${d.subscriptions.subscribed}/${d.subscriptions.tenants}<br>
+      评分（会话）：${d.ratings.session.avg} 分 / ${d.ratings.session.count} 条
+    </p>`;
+  const hot = await CS.get('/api/kb/hot?limit=5');
+  document.getElementById('hotFaq').innerHTML = hot.length ?
+    '<table><tr><th>问题</th><th>分类</th><th>命中</th></tr>' + hot.map(e =>
+      `<tr><td>${CS.esc(e.question)}</td><td>${CS.esc(e.category)}</td><td>${e.hitCount}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无命中</div>';
+}
+
+async function loadSessions() {
+  const status = document.getElementById('sessStatus').value;
+  const d = await CS.get('/api/admin/sessions?size=30' + (status ? '&status=' + status : ''));
+  document.getElementById('sessionList').innerHTML = d.list.length ?
+    '<table><tr><th>会话</th><th>用户</th><th>身份</th><th>租户</th><th>意图</th><th>状态</th><th>创建</th></tr>' +
+    d.list.map(s => `<tr style="cursor:pointer" onclick="showMsgs('${s.id}')">
+      <td class="mono">${s.id}</td><td>${CS.esc(s.userName)}</td><td>${s.userRole}</td>
+      <td>${CS.esc(s.tenantCode)}</td><td>${CS.esc(s.intent || '-')}</td>
+      <td>${CS.statusBadge(s.status)}</td><td class="muted">${CS.time(s.createdAt)}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无会话</div>';
+}
+
+async function showMsgs(id) {
+  const list = await CS.get('/api/admin/sessions/' + id + '/messages');
+  document.getElementById('sessMsgCard').style.display = '';
+  document.getElementById('sessMsgId').textContent = id;
+  document.getElementById('sessMsgs').innerHTML = list.map(m => `
+    <p style="font-size:13px;margin-bottom:8px">
+      <span class="badge ${m.role === 'USER' ? '' : 'gray'}">${m.role}</span>
+      <span class="muted">${CS.time(m.createdAt)}${m.toolName ? ' · 工具 ' + CS.esc(m.toolName) : ''}</span><br>
+      ${CS.esc(m.content || '')}</p>`).join('') || '<div class="empty">暂无消息</div>';
+}
+
+async function loadKb() {
+  const list = await CS.get('/api/admin/kb');
+  document.getElementById('kbCount').textContent = '共 ' + list.length + ' 条';
+  document.getElementById('kbList').innerHTML = '<table><tr><th>ID</th><th>问题</th><th>分类</th><th>命中</th><th>启用</th><th>操作</th></tr>' +
+    list.map(e => `<tr><td class="mono">${e.id}</td><td>${CS.esc(e.question)}</td>
+      <td>${CS.esc(e.category)}</td><td>${e.hitCount}</td>
+      <td>${e.enabled ? '<span class="badge ok">是</span>' : '<span class="badge gray">否</span>'}</td>
+      <td><button class="small danger" onclick="kbDelete('${e.id}')">删除</button></td></tr>`).join('') + '</table>';
+}
+
+async function kbCreate() {
+  const req = {
+    question: document.getElementById('kbQ').value.trim(),
+    answer: document.getElementById('kbA').value.trim(),
+    category: document.getElementById('kbCat').value.trim(),
+    keywords: document.getElementById('kbKw').value.trim(),
+  };
+  if (!req.question || !req.answer) return CS.toast('问题与答案必填', true);
+  try {
+    await CS.post('/api/admin/kb', req);
+    CS.toast('FAQ 已新增');
+    ['kbQ', 'kbA', 'kbKw'].forEach(id => document.getElementById(id).value = '');
+    loadKb();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function kbDelete(id) {
+  if (!confirm('确认删除 FAQ ' + id + '？')) return;
+  try { await CS.del('/api/admin/kb/' + id); CS.toast('已删除'); loadKb(); }
+  catch (e) { CS.toast(e.message, true); }
+}
+
+async function loadLlm() {
+  const status = document.getElementById('llmStatus').value;
+  const list = await CS.get('/api/admin/llm-calls?size=30' + (status ? '&status=' + status : ''));
+  document.getElementById('llmList').innerHTML = list.length ?
+    '<table><tr><th>ID</th><th>会话</th><th>模型</th><th>Tokens</th><th>耗时</th><th>状态</th><th>时间</th></tr>' +
+    list.map(c => `<tr><td class="mono">${c.id}</td><td class="mono">${CS.esc(c.sessionId || '-')}</td>
+      <td>${CS.esc(c.model || '-')}</td><td>${(c.promptTokens || 0) + (c.completionTokens || 0)}</td>
+      <td>${c.latencyMs || 0}ms</td>
+      <td>${c.status === 'OK' ? '<span class="badge ok">OK</span>' : '<span class="badge err" title="' + CS.esc(c.error || '') + '">ERROR</span>'}</td>
+      <td class="muted">${CS.time(c.createdAt)}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无调用记录（未配置 LLM Key 时为 FAQ 模式）</div>';
+}
+
+async function loadSub() {
+  const list = await CS.get('/api/admin/subscriptions');
+  document.getElementById('subList').innerHTML = '<table><tr><th>租户</th><th>编码</th><th>状态</th><th>订阅</th><th>到期</th><th>来源</th><th>操作</th></tr>' +
+    list.map(r => `<tr><td>${CS.esc(r.tenant.name)}</td><td class="mono">${CS.esc(r.tenant.code)}</td>
+      <td>${CS.statusBadge(r.tenant.status)}</td>
+      <td>${r.subscribed ? '<span class="badge ok">已订阅</span>' : '<span class="badge gray">免费</span>'}</td>
+      <td class="muted">${r.subscription ? CS.day(r.subscription.expireAt) : '-'}</td>
+      <td class="muted">${r.subscription ? CS.esc(r.subscription.source) : '-'}</td>
+      <td><button class="small ghost" onclick="freeze('${r.tenant.id}','${r.tenant.status === 'ACTIVE' ? 'FROZEN' : 'ACTIVE'}')">
+        ${r.tenant.status === 'ACTIVE' ? '冻结' : '解冻'}</button></td></tr>`).join('') + '</table>';
+  const codes = await CS.get('/api/admin/codes');
+  document.getElementById('codeList').innerHTML = codes.length ?
+    '<table><tr><th>激活码</th><th>天数</th><th>状态</th></tr>' + codes.slice(0, 20).map(c =>
+      `<tr><td class="mono">${c.code}</td><td>${c.days}</td><td>${CS.statusBadge(c.status)}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无激活码</div>';
+  const orders = await CS.get('/api/admin/sub-orders');
+  document.getElementById('subOrders').innerHTML = orders.length ?
+    '<table><tr><th>单号</th><th>金额</th><th>状态</th></tr>' + orders.slice(0, 10).map(o =>
+      `<tr><td class="mono">${o.id}</td><td>¥${CS.yuan(o.amount)}</td><td>${CS.statusBadge(o.status)}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无支付单</div>';
+}
+
+async function grant() {
+  const tenantId = document.getElementById('grantTenant').value.trim();
+  const days = Number(document.getElementById('grantDays').value);
+  if (!tenantId) return CS.toast('请填写租户 ID', true);
+  try {
+    const sub = await CS.post('/api/admin/subscriptions/grant', { tenantId, days });
+    CS.toast('已开通，到期 ' + CS.day(sub.expireAt));
+    loadSub();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function genCodes() {
+  try {
+    const codes = await CS.post('/api/admin/codes/generate', {
+      days: Number(document.getElementById('codeDays').value),
+      count: Number(document.getElementById('codeCount').value),
+    });
+    CS.toast('已生成 ' + codes.length + ' 个激活码');
+    loadSub();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function createTenant() {
+  try {
+    await CS.post('/api/admin/tenants', {
+      code: document.getElementById('newCode').value.trim(),
+      name: document.getElementById('newName').value.trim(),
+    });
+    CS.toast('租户已创建');
+    loadSub();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function freeze(id, status) {
+  try {
+    await CS.post(`/api/admin/tenants/${id}/status`, { status });
+    CS.toast(status === 'FROZEN' ? '已冻结' : '已解冻');
+    loadSub();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+document.getElementById('token').value = localStorage.getItem(CS.tokenKey) || '';
+refresh();
+</script>
+</body>
+</html>

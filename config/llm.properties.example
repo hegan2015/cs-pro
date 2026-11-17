@@ -1,0 +1,8 @@
+# LLM 配置示例：复制为 config/llm.properties 并填入 Key 后重启 cs-pro 生效。
+# OpenAI 兼容协议均可：OpenAI / DeepSeek / 通义 / Kimi / 本地 Ollama 等。
+cs.llm.base-url=https://api.openai.com/v1
+cs.llm.api-key=
+cs.llm.model=gpt-4o-mini
+cs.llm.temperature=0.3
+cs.llm.max-tokens=1024
+cs.llm.timeout-ms=60000

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能咨询 · cs-pro</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<div class="topbar">
+  <h1>智能咨询</h1>
+  <span class="sub" id="sessionInfo"></span>
+  <span class="spacer"></span>
+  <a href="subscription.html" id="subLink">订阅</a>
+  <a href="index.html">首页</a>
+</div>
+<div class="wrap">
+  <!-- 建会话 -->
+  <div class="card" id="setupCard">
+    <h2>开始新会话</h2>
+    <div class="row">
+      <div style="min-width:130px">
+        <label>身份</label>
+        <select id="role">
+          <option value="PASSENGER">乘客</option>
+          <option value="DRIVER">司机</option>
+          <option value="MERCHANT">商户</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:140px">
+        <label>用户 ID</label>
+        <input id="userId" placeholder="乘客/司机如 P1、D1；商户如 M1">
+      </div>
+      <div style="flex:1;min-width:140px">
+        <label>昵称（可选）</label>
+        <input id="userName" placeholder="怎么称呼您">
+      </div>
+      <button onclick="createSession()" style="align-self:flex-end">进入会话</button>
+    </div>
+    <p class="muted" style="margin-top:8px">乘客/司机默认接入 ride-pro 租户，商户默认接入 payment-pro 租户。身份用于服务端数据归属校验，只能查自己的数据。</p>
+  </div>
+
+  <!-- 会话区 -->
+  <div id="chatArea" style="display:none">
+    <div id="subBanner"></div>
+    <div class="card">
+      <div class="chat-box" id="chatBox"></div>
+      <div class="row">
+        <input id="input" placeholder="输入问题，如：打车怎么计价？ / 查一下我的订单 O1" style="flex:1"
+               onkeydown="if(event.key==='Enter')send()">
+        <button id="sendBtn" onclick="send()">发送</button>
+        <button class="ghost" onclick="endSession()">结束会话</button>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        试试：<a href="javascript:ask('打车怎么计价？')">打车怎么计价</a> ·
+        <a href="javascript:ask('退款多久到账？')">退款多久到账</a> ·
+        <a href="javascript:ask('查一下我的钱包余额')">查钱包余额</a> ·
+        <a href="javascript:ask('我要投诉司机态度差')">我要投诉</a>
+      </div>
+    </div>
+    <div class="card">
+      <h2>我的工单 <button class="small ghost" onclick="loadTickets()">刷新</button></h2>
+      <div id="ticketList"><div class="empty">暂无工单</div></div>
+    </div>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+let session = null;
+let es = null;
+let liveBubble = null;
+let sending = false;
+
+function tenantFor(role) { return role === 'MERCHANT' ? 'payment-pro' : 'ride-pro'; }
+
+async function createSession() {
+  const userRole = document.getElementById('role').value;
+  const userId = document.getElementById('userId').value.trim();
+  const userName = document.getElementById('userName').value.trim();
+  if (!userId) return CS.toast('请填写用户 ID', true);
+  try {
+    session = await CS.post('/api/sessions', { userRole, userId, userName, tenantCode: tenantFor(userRole) });
+    enterChat();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+function enterChat() {
+  document.getElementById('setupCard').style.display = 'none';
+  document.getElementById('chatArea').style.display = '';
+  document.getElementById('sessionInfo').textContent =
+    `${session.id} · ${session.userName}（${session.userRole}）`;
+  document.getElementById('subLink').href =
+    `subscription.html?tenant=${session.tenantCode}&user=${encodeURIComponent(session.userId)}`;
+  localStorage.setItem('cs-session', session.id);
+  document.getElementById('chatBox').innerHTML = '';
+  refreshBanner();
+  loadTickets();
+  CS.get('/api/sessions/' + session.id + '/messages').then(list => {
+    list.forEach(m => renderMessage(m));
+    scrollBottom();
+  }).catch(() => {});
+  connectSse();
+  appendBotText('您好，我是智能客服小 Q 可以问我计价、支付、退款、提现等问题' +
+    (session.userRole === 'MERCHANT' ? '，或查询 payment-pro 订单与账户余额。' : '，也可以帮您查订单、钱包和流水。'));
+}
+
+function connectSse() {
+  if (es) es.close();
+  es = new EventSource('/api/sessions/' + session.id + '/stream');
+  es.addEventListener('token', ev => {
+    const d = JSON.parse(ev.data);
+    if (!liveBubble) liveBubble = appendBotText('');
+    liveBubble.textContent += d.text;
+    scrollBottom();
+  });
+  es.addEventListener('tool', ev => {
+    const d = JSON.parse(ev.data);
+    const tip = document.createElement('div');
+    tip.className = 'tool-tip';
+    tip.textContent = (d.ok ? '已调用工具 ' : '工具调用失败 ') + d.name;
+    document.getElementById('chatBox').appendChild(tip);
+    scrollBottom();
+  });
+  es.addEventListener('message', ev => {
+    const m = JSON.parse(ev.data);
+    liveBubble = null;
+    renderMessage(m);
+    scrollBottom();
+  });
+}
+
+async function refreshBanner() {
+  try {
+    const d = await CS.get(`/api/subscription/status?tenantCode=${session.tenantCode}&userId=${encodeURIComponent(session.userId)}`);
+    const el = document.getElementById('subBanner');
+    if (d.subscribed) {
+      el.innerHTML = `<div class="banner sub">已订阅（到期 ${CS.day(d.subscription.expireAt)}）· 智能助手与业务查询不限次</div>`;
+    } else {
+      const left = Math.max(0, d.freeUsage.limit - d.freeUsage.used);
+      el.innerHTML = `<div class="banner free">免费模式 · 今日剩余 ${left}/${d.freeUsage.limit} 条 FAQ
+        <a href="subscription.html?tenant=${session.tenantCode}&user=${encodeURIComponent(session.userId)}">订阅解锁智能助手 →</a></div>`;
+    }
+  } catch (e) { /*  banner 非关键 */ }
+}
+
+function appendUserText(text) {
+  const box = document.getElementById('chatBox');
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.innerHTML = `<div class="bubble">${CS.esc(text)}</div>`;
+  box.appendChild(div);
+  scrollBottom();
+}
+
+function appendBotText(text) {
+  const box = document.getElementById('chatBox');
+  const div = document.createElement('div');
+  div.className = 'msg bot';
+  div.innerHTML = '<div class="bubble"></div>';
+  div.querySelector('.bubble').textContent = text;
+  box.appendChild(div);
+  scrollBottom();
+  return div.querySelector('.bubble');
+}
+
+function renderMessage(m) {
+  if (m.role === 'USER') { appendUserText(m.content); return; }
+  if (document.getElementById('msg-' + m.id)) {
+    // SSE 已渲染过流式内容：补齐元信息
+    const exist = document.getElementById('msg-' + m.id);
+    exist.querySelector('.bubble').textContent = m.content;
+    fillMeta(exist, m);
+    return;
+  }
+  const box = document.getElementById('chatBox');
+  const div = document.createElement('div');
+  div.className = 'msg bot';
+  div.id = 'msg-' + m.id;
+  div.innerHTML = '<div class="bubble"></div>';
+  div.querySelector('.bubble').textContent = m.content;
+  fillMeta(div, m);
+  box.appendChild(div);
+}
+
+function fillMeta(div, m) {
+  let old = div.querySelector('.meta');
+  if (old) old.remove();
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  let html = '';
+  if (m.kbRefs) html += `知识库 ${CS.esc(m.kbRefs)} · `;
+  if (m.latencyMs != null) html += `${m.latencyMs}ms · `;
+  html += [1,2,3,4,5].map(s => `<a href="javascript:rate('${m.id}',${s})" title="${s} 星">${s}★</a>`).join('');
+  meta.innerHTML = html;
+  div.appendChild(meta);
+  if (m.ticketDraft) {
+    try {
+      const d = JSON.parse(m.ticketDraft);
+      const card = document.createElement('div');
+      card.className = 'draft-card';
+      card.innerHTML = `<b>工单草稿</b>（${CS.esc(d.category)}）：${CS.esc(d.summary)}
+        ${d.orderId ? ' · 订单 ' + CS.esc(d.orderId) : ''}
+        <div style="margin-top:8px">
+          <button class="small" onclick="confirmDraft('${m.id}', this)">确认创建工单</button>
+          <span class="muted">确认前不会创建</span>
+        </div>`;
+      card.dataset.draft = m.ticketDraft;
+      card.dataset.msgId = m.id;
+      div.appendChild(card);
+    } catch (e) { /* 草稿解析失败忽略 */ }
+  }
+}
+
+async function confirmDraft(msgId, btn) {
+  const card = btn.closest('.draft-card');
+  const d = JSON.parse(card.dataset.draft);
+  btn.disabled = true;
+  try {
+    const t = await CS.post('/api/tickets', {
+      sessionId: session.id, category: d.category, summary: d.summary,
+      orderId: d.orderId || null, requestId: `TICKET-${session.id}-${msgId}`,
+    });
+    card.innerHTML = `工单已创建：<span class="mono">${t.id}</span> ${CS.statusBadge(t.status)}`;
+    CS.toast('工单创建成功 ' + t.id);
+    loadTickets();
+  } catch (e) {
+    btn.disabled = false;
+    CS.toast(e.message, true);
+  }
+}
+
+async function rate(messageId, score) {
+  try {
+    await CS.post('/api/ratings', { targetType: 'MESSAGE', targetId: messageId, score });
+    CS.toast('感谢评分 ' + score + '★');
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function send() {
+  if (sending) return;
+  const input = document.getElementById('input');
+  const content = input.value.trim();
+  if (!content) return;
+  input.value = '';
+  appendUserText(content);
+  sending = true;
+  document.getElementById('sendBtn').disabled = true;
+  liveBubble = null;
+  try {
+    const bot = await CS.post(`/api/sessions/${session.id}/messages`, { content });
+    liveBubble = null;
+    renderMessage(bot);
+    scrollBottom();
+    refreshBanner();
+  } catch (e) {
+    liveBubble = null;
+    appendBotText('' + e.message);
+    if (e.code === 'A0409') refreshBanner();
+  } finally {
+    sending = false;
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('input').focus();
+  }
+}
+
+function ask(text) {
+  document.getElementById('input').value = text;
+  send();
+}
+
+async function endSession() {
+  try {
+    await CS.post(`/api/sessions/${session.id}/end`);
+    if (es) es.close();
+    CS.toast('会话已结束');
+    localStorage.removeItem('cs-session');
+    session = null;
+    document.getElementById('chatArea').style.display = 'none';
+    document.getElementById('setupCard').style.display = '';
+    document.getElementById('sessionInfo').textContent = '';
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function loadTickets() {
+  if (!session) return;
+  try {
+    const d = await CS.get(`/api/tickets?userId=${encodeURIComponent(session.userId)}&size=10`);
+    const el = document.getElementById('ticketList');
+    if (!d.list.length) { el.innerHTML = '<div class="empty">暂无工单</div>'; return; }
+    el.innerHTML = '<table><tr><th>工单</th><th>分类</th><th>摘要</th><th>状态</th><th>创建</th></tr>' +
+      d.list.map(t => `<tr>
+        <td class="mono">${t.id}</td><td>${CS.esc(t.category)}</td>
+        <td>${CS.esc(t.summary)}</td><td>${CS.statusBadge(t.status)}</td>
+        <td class="muted">${CS.time(t.createdAt)}</td></tr>`).join('') + '</table>';
+  } catch (e) { /* 列表非关键 */ }
+}
+
+function scrollBottom() {
+  const box = document.getElementById('chatBox');
+  box.scrollTop = box.scrollHeight;
+}
+
+// 恢复上次会话
+const savedId = localStorage.getItem('cs-session');
+const savedUser = localStorage.getItem('cs-user');
+if (savedUser) document.getElementById('userId').value = savedUser;
+if (savedId) {
+  CS.get('/api/sessions/' + savedId).then(s => {
+    if (s.status === 'ACTIVE') { session = s; enterChat(); }
+    else localStorage.removeItem('cs-session');
+  }).catch(() => localStorage.removeItem('cs-session'));
+}
+</script>
+</body>
+</html>

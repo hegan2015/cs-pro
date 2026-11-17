@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cs-pro 智能客服</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<div class="topbar">
+  <h1>cs-pro 智能客服</h1>
+  <span class="sub">FAQ 知识库 · LLM 智能问答 · 业务查询 · 工单</span>
+  <span class="spacer"></span>
+  <span id="health" class="sub"></span>
+</div>
+<div class="wrap">
+  <div class="grid cols-2">
+    <a class="card" href="chat.html">
+      <h2>开始咨询</h2>
+      <p class="muted">乘客 / 司机 / 商户入口。免费 FAQ 每日 5 条；订阅后解锁智能助手与订单、钱包、流水查询。</p>
+    </a>
+    <a class="card" href="subscription.html">
+      <h2>订阅管理</h2>
+      <p class="muted">标准版 30 天 ¥99。激活码立即开通，或已接入 payment-pro 的租户用余额支付；续订天数叠加。</p>
+    </a>
+    <a class="card" href="agent.html">
+      <h2>工单工作台</h2>
+      <p class="muted">客服处理台：认领、跟进备注、解决与关闭。已解决工单 7 天自动关闭。</p>
+    </a>
+    <a class="card" href="admin.html">
+      <h2>管理后台</h2>
+      <p class="muted">运营总览与趋势、会话审计、FAQ 维护、LLM 调用审计、租户与激活码管理。</p>
+    </a>
+  </div>
+  <div class="card">
+    <h2>系统说明</h2>
+    <p class="muted" style="line-height:1.9">
+      · 上游系统：ride-pro 打车平台（8090，只读查询）、payment-pro 支付平台（8443 OpenAPI 验签，只读 + 订阅购买）。<br>
+      · 未配置 LLM API Key 时自动运行于 FAQ 知识库模式，全部功能可离线体验。<br>
+      · 工单提交与查询对所有用户免费；涉及退款等写操作一律走工单人工处理。
+    </p>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+CS.get('/api/health').then(d => {
+  document.getElementById('health').textContent = '服务正常 · ' + d.service;
+}).catch(() => {
+  document.getElementById('health').textContent = '服务不可达';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工单工作台 · cs-pro</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<div class="topbar">
+  <h1>工单工作台</h1>
+  <span class="spacer"></span>
+  <a href="admin.html">管理后台</a>
+  <a href="index.html">首页</a>
+</div>
+<div class="wrap">
+  <div class="card">
+    <div class="row">
+      <div style="min-width:180px">
+        <label>管理令牌（X-Admin-Token）</label>
+        <input id="token" type="password" placeholder="默认 cs-admin">
+      </div>
+      <div style="min-width:130px">
+        <label>状态过滤</label>
+        <select id="statusFilter" onchange="loadList()">
+          <option value="">全部</option>
+          <option value="OPEN" selected>待处理</option>
+          <option value="PROCESSING">处理中</option>
+          <option value="RESOLVED">已解决</option>
+          <option value="CLOSED">已关闭</option>
+          <option value="CANCELLED">已取消</option>
+        </select>
+      </div>
+      <button onclick="saveToken();loadList()" style="align-self:flex-end">刷新</button>
+    </div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="card">
+      <h2>工单列表 <span class="muted" id="totalInfo"></span></h2>
+      <div id="list"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="card">
+      <h2>工单详情</h2>
+      <div id="detail"><div class="empty">点击左侧工单查看</div></div>
+    </div>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+let current = null;
+
+function saveToken() {
+  const t = document.getElementById('token').value.trim();
+  if (t) localStorage.setItem(CS.tokenKey, t);
+}
+
+async function loadList() {
+  const status = document.getElementById('statusFilter').value;
+  try {
+    const d = await CS.get('/api/admin/tickets?size=50' + (status ? '&status=' + status : ''));
+    document.getElementById('totalInfo').textContent = '共 ' + d.total + ' 条';
+    const el = document.getElementById('list');
+    if (!d.list.length) { el.innerHTML = '<div class="empty">暂无工单</div>'; return; }
+    el.innerHTML = '<table><tr><th>工单</th><th>分类</th><th>摘要</th><th>状态</th></tr>' +
+      d.list.map(t => `<tr style="cursor:pointer" onclick="openDetail('${t.id}')">
+        <td class="mono">${t.id}${t.priority === 'URGENT' ? ' <span class="badge err">急</span>' : ''}</td>
+        <td>${CS.esc(t.category)}</td><td>${CS.esc(t.summary)}</td>
+        <td>${CS.statusBadge(t.status)}</td></tr>`).join('') + '</table>';
+  } catch (e) {
+    document.getElementById('list').innerHTML = `<div class="empty">${CS.esc(e.message)}</div>`;
+  }
+}
+
+async function openDetail(id) {
+  try {
+    const d = await CS.get('/api/admin/tickets/' + id);
+    current = d.ticket;
+    const t = d.ticket;
+    const actions = [];
+    if (t.status === 'OPEN') {
+      actions.push(`<div class="row" style="margin-top:10px">
+        <input id="assignee" placeholder="处理人姓名" style="flex:1">
+        <button onclick="doAssign()">认领处理</button></div>`);
+    }
+    if (t.status === 'PROCESSING') {
+      actions.push(`<div style="margin-top:10px">
+        <label>解决方案</label><textarea id="solution" placeholder="填写处理结果"></textarea>
+        <button onclick="doResolve()" style="margin-top:8px">标记已解决</button></div>`);
+    }
+    if (t.status === 'RESOLVED') {
+      actions.push(`<div style="margin-top:10px"><button class="ghost" onclick="doClose()">关闭工单</button>
+        <span class="muted">（7 天未关闭将自动关闭）</span></div>`);
+    }
+    document.getElementById('detail').innerHTML = `
+      <div class="row">
+        <span class="mono">${t.id}</span> ${CS.statusBadge(t.status)}
+        <span class="badge">${CS.esc(t.category)}</span>
+        ${t.priority === 'URGENT' ? '<span class="badge err">紧急</span>' : ''}
+      </div>
+      <p style="margin:10px 0;font-size:14px">${CS.esc(t.summary)}</p>
+      <p class="muted">用户 ${CS.esc(t.userId)} · 来源 ${CS.esc(t.source)} · 创建 ${CS.time(t.createdAt)}
+        ${t.orderId ? ' · 订单 ' + CS.esc(t.orderId) : ''}
+        ${t.assignee ? ' · 处理人 ' + CS.esc(t.assignee) : ''}</p>
+      ${t.solution ? `<p style="margin-top:8px;font-size:13px"><b>解决方案：</b>${CS.esc(t.solution)}</p>` : ''}
+      ${actions.join('')}
+      <h3 style="margin-top:14px">跟进备注</h3>
+      <div id="notes">${d.notes.length ? d.notes.map(n =>
+        `<p style="font-size:13px;margin-bottom:6px"><b>${CS.esc(n.author)}</b>
+         <span class="muted">${CS.time(n.createdAt)}</span><br>${CS.esc(n.content)}</p>`).join('')
+        : '<div class="empty">暂无备注</div>'}</div>
+      <div class="row" style="margin-top:8px">
+        <input id="noteInput" placeholder="添加备注…" style="flex:1"
+               onkeydown="if(event.key==='Enter')addNote()">
+        <button class="small" onclick="addNote()">添加</button>
+      </div>`;
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function doAssign() {
+  const assignee = document.getElementById('assignee').value.trim();
+  if (!assignee) return CS.toast('请填写处理人', true);
+  try {
+    await CS.post(`/api/admin/tickets/${current.id}/assign`, { assignee });
+    CS.toast('已认领');
+    openDetail(current.id); loadList();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function doResolve() {
+  const solution = document.getElementById('solution').value.trim();
+  if (!solution) return CS.toast('请填写解决方案', true);
+  try {
+    await CS.post(`/api/admin/tickets/${current.id}/resolve`, { solution });
+    CS.toast('已标记解决');
+    openDetail(current.id); loadList();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function doClose() {
+  try {
+    await CS.post(`/api/admin/tickets/${current.id}/close`);
+    CS.toast('已关闭');
+    openDetail(current.id); loadList();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function addNote() {
+  const content = document.getElementById('noteInput').value.trim();
+  if (!content) return;
+  try {
+    await CS.post(`/api/admin/tickets/${current.id}/notes`, { author: '客服', content });
+    openDetail(current.id);
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+document.getElementById('token').value = localStorage.getItem(CS.tokenKey) || '';
+loadList();
+</script>
+</body>
+</html>

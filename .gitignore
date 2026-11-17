@@ -1,0 +1,8 @@
+target/
+logs/
+data/
+config/llm.properties
+config/payment-pro.properties
+*.pem
+*.tmp
+.DS_Store

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>订阅管理 · cs-pro</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<div class="topbar">
+  <h1>订阅管理</h1>
+  <span class="spacer"></span>
+  <a href="index.html">首页</a>
+  <a href="chat.html">去咨询</a>
+</div>
+<div class="wrap">
+  <div class="card">
+    <h2>查询订阅状态</h2>
+    <div class="row">
+      <div style="flex:1;min-width:160px">
+        <label>租户编码</label>
+        <input id="tenantCode" value="ride-pro" placeholder="ride-pro / payment-pro / 自定义">
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label>用户 ID（查免费额度，可选）</label>
+        <input id="userId" placeholder="如 P1">
+      </div>
+      <button onclick="loadStatus()" style="align-self:flex-end">查询</button>
+    </div>
+  </div>
+
+  <div id="statusCard" class="card" style="display:none">
+    <h2 id="tenantName"></h2>
+    <div id="subBanner"></div>
+    <div class="grid cols-3" id="subStats"></div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="card">
+      <h2>方式一：激活码开通</h2>
+      <label>激活码</label>
+      <input id="code" placeholder="CS-XXXX-XXXX" style="text-transform:uppercase">
+      <div style="margin-top:10px">
+        <button onclick="redeem()">立即兑换</button>
+      </div>
+      <p class="muted" style="margin-top:8px">一码一用，兑换后立即生效；未到期续订天数自动叠加。</p>
+    </div>
+    <div class="card" id="payCard">
+      <h2>方式二：余额支付（payment-pro）</h2>
+      <div id="payBody">
+        <label>付款账户 ID（payment-pro 账户）</label>
+        <input id="payerAccountId" placeholder="如 A12">
+        <div style="margin-top:10px">
+          <button onclick="createOrder()">下单支付</button>
+        </div>
+        <p class="muted" style="margin-top:8px">金额由服务端固定（套餐价），支付成功后服务端自动开通，无需手动确认。</p>
+      </div>
+      <div id="payDisabled" class="empty" style="display:none">支付通道未配置（未执行 integrate-payment.sh），请使用激活码开通。</div>
+    </div>
+  </div>
+
+  <div class="card" id="orderCard" style="display:none">
+    <h2>最近订阅单</h2>
+    <div id="orderInfo"></div>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+let payEnabled = false;
+
+async function loadStatus() {
+  const tenantCode = document.getElementById('tenantCode').value.trim();
+  const userId = document.getElementById('userId').value.trim();
+  if (!tenantCode) return CS.toast('请填写租户编码', true);
+  try {
+    const d = await CS.get(`/api/subscription/status?tenantCode=${encodeURIComponent(tenantCode)}&userId=${encodeURIComponent(userId)}`);
+    payEnabled = d.payEnabled;
+    document.getElementById('statusCard').style.display = '';
+    document.getElementById('tenantName').textContent = d.tenant.name + '（' + d.tenant.code + '）';
+    const banner = document.getElementById('subBanner');
+    if (d.subscribed) {
+      banner.innerHTML = `<div class="banner sub">已订阅 · 到期时间 ${CS.day(d.subscription.expireAt)}（剩余 ${Math.ceil((d.subscription.expireAt - Date.now()) / 86400000)} 天）</div>`;
+    } else {
+      banner.innerHTML = `<div class="banner free">当前为免费模式：每日 ${d.freeUsage.limit} 条 FAQ，已用 ${d.freeUsage.used} 条。订阅解锁智能助手与业务查询。</div>`;
+    }
+    document.getElementById('subStats').innerHTML = `
+      <div class="stat"><div class="num">${CS.esc(d.plan.name)}</div><div class="lbl">套餐</div></div>
+      <div class="stat"><div class="num">¥${CS.yuan(d.plan.price)}</div><div class="lbl">${d.plan.days} 天</div></div>
+      <div class="stat"><div class="num">${d.freeUsage.used}/${d.freeUsage.limit}</div><div class="lbl">今日免费额度</div></div>`;
+    document.getElementById('payBody').style.display = payEnabled ? '' : 'none';
+    document.getElementById('payDisabled').style.display = payEnabled ? 'none' : '';
+    localStorage.setItem('cs-tenant', tenantCode);
+    if (userId) localStorage.setItem('cs-user', userId);
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function redeem() {
+  const tenantCode = document.getElementById('tenantCode').value.trim();
+  const code = document.getElementById('code').value.trim();
+  if (!code) return CS.toast('请填写激活码', true);
+  try {
+    const sub = await CS.post('/api/subscription/redeem', { tenantCode, code });
+    CS.toast('开通成功，到期 ' + CS.day(sub.expireAt));
+    document.getElementById('code').value = '';
+    loadStatus();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function createOrder() {
+  const tenantCode = document.getElementById('tenantCode').value.trim();
+  const payerAccountId = document.getElementById('payerAccountId').value.trim();
+  if (!payerAccountId) return CS.toast('请填写付款账户 ID', true);
+  try {
+    const order = await CS.post('/api/subscription/orders', { tenantCode, payerAccountId });
+    CS.toast('订阅单已创建：' + order.id);
+    pollOrder(order.id);
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function pollOrder(id) {
+  document.getElementById('orderCard').style.display = '';
+  for (let i = 0; i < 40; i++) {
+    try {
+      const o = await CS.get('/api/subscription/orders/' + id);
+      document.getElementById('orderInfo').innerHTML = `
+        <div class="row">
+          <span class="mono">${o.id}</span> ${CS.statusBadge(o.status)}
+          <span class="muted">¥${CS.yuan(o.amount)} / ${o.days} 天</span>
+          <span class="muted">pp 订单 ${CS.esc(o.ppOrderId || '-')}</span>
+        </div>`;
+      if (o.status === 'ACTIVATED') { CS.toast('支付成功，订阅已开通'); loadStatus(); return; }
+      if (['FAILED', 'CLOSED'].includes(o.status)) { CS.toast('订阅单' + (o.status === 'FAILED' ? '失败' : '超时关闭'), true); return; }
+    } catch (e) { CS.toast(e.message, true); return; }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+const savedTenant = CS.qs('tenant') || localStorage.getItem('cs-tenant');
+if (savedTenant) document.getElementById('tenantCode').value = savedTenant;
+const savedUser = CS.qs('user') || localStorage.getItem('cs-user');
+if (savedUser) document.getElementById('userId').value = savedUser;
+loadStatus();
+</script>
+</body>
+</html>
