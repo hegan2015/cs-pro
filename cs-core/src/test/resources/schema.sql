@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS idempotent_record (
 -- 订阅域（§3A）
 CREATE SEQUENCE IF NOT EXISTS seq_tenant START WITH 1;
 CREATE SEQUENCE IF NOT EXISTS seq_sub_order START WITH 1;
+CREATE SEQUENCE IF NOT EXISTS seq_invoice START WITH 1;
 
 CREATE TABLE IF NOT EXISTS cs_tenant (
     id         VARCHAR(32) PRIMARY KEY,
@@ -168,3 +169,72 @@ CREATE TABLE IF NOT EXISTS cs_free_usage (
     used_count INT         NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, use_day)
 );
+
+-- v1.1.0 增量（幂等 ALTER，与主 schema 保持一致）
+ALTER TABLE cs_message ADD COLUMN IF NOT EXISTS tool_trace CLOB;
+ALTER TABLE cs_session ADD COLUMN IF NOT EXISTS takeover BOOLEAN NOT NULL DEFAULT FALSE;-- v1.2.0 增量（幂等，与 db/schema-mysql.sql 保持一致）
+ALTER TABLE cs_llm_call ADD COLUMN IF NOT EXISTS prompt_version VARCHAR(32);
+ALTER TABLE cs_kb ADD COLUMN IF NOT EXISTS cited_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE cs_kb ADD COLUMN IF NOT EXISTS cited_resolved_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE cs_activation_code ADD COLUMN IF NOT EXISTS plan_code VARCHAR(16) NOT NULL DEFAULT 'standard';
+-- E 批：图片附件（消息/工单）
+ALTER TABLE cs_message ADD COLUMN IF NOT EXISTS attachments VARCHAR(1024);
+ALTER TABLE cs_ticket ADD COLUMN IF NOT EXISTS attachments VARCHAR(1024);
+ALTER TABLE cs_session ADD COLUMN IF NOT EXISTS access_token VARCHAR(64);
+ALTER TABLE cs_subscription ADD COLUMN IF NOT EXISTS plan_code VARCHAR(16) NOT NULL DEFAULT 'standard';
+
+CREATE TABLE IF NOT EXISTS cs_kb_revision (
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    kb_id      VARCHAR(32)  NOT NULL,
+    question   VARCHAR(256) NOT NULL,
+    answer     CLOB         NOT NULL,
+    category   VARCHAR(32)  NOT NULL,
+    keywords   VARCHAR(256),
+    saved_by   VARCHAR(64),
+    saved_at   BIGINT       NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kbrev_kb ON cs_kb_revision (kb_id, saved_at);
+
+CREATE TABLE IF NOT EXISTS cs_open_key (
+    api_key    VARCHAR(48) PRIMARY KEY,
+    tenant_id  VARCHAR(32) NOT NULL,
+    secret     VARCHAR(64) NOT NULL,
+    status     VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    created_at BIGINT      NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_openkey_tenant ON cs_open_key (tenant_id);
+
+CREATE TABLE IF NOT EXISTS cs_invoice (
+    id             VARCHAR(32) PRIMARY KEY,
+    tenant_id      VARCHAR(32) NOT NULL,
+    period         VARCHAR(7)  NOT NULL,
+    prompt_tokens  BIGINT      NOT NULL,
+    complet_tokens BIGINT      NOT NULL,
+    calls          BIGINT      NOT NULL,
+    amount         BIGINT      NOT NULL,
+    plan_code      VARCHAR(16) NOT NULL,
+    created_at     BIGINT      NOT NULL,
+    CONSTRAINT uk_invoice UNIQUE (tenant_id, period)
+);
+CREATE INDEX IF NOT EXISTS idx_invoice_tenant ON cs_invoice (tenant_id);
+
+CREATE TABLE IF NOT EXISTS cs_admin_audit (
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    actor      VARCHAR(64) NOT NULL,
+    action     VARCHAR(64) NOT NULL,
+    target     VARCHAR(128),
+    detail     VARCHAR(1024),
+    created_at BIGINT      NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admaudit_time ON cs_admin_audit (created_at);
+
+CREATE TABLE IF NOT EXISTS cs_proactive_event (
+    event_key  VARCHAR(128) PRIMARY KEY,
+    tenant_id  VARCHAR(32) NOT NULL,
+    user_id    VARCHAR(32) NOT NULL,
+    session_id VARCHAR(32),
+    payload    VARCHAR(1024),
+    status     VARCHAR(16) NOT NULL DEFAULT 'SENT',
+    created_at BIGINT      NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proactive_tenant ON cs_proactive_event (tenant_id, created_at);

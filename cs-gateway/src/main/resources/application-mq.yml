@@ -1,0 +1,10 @@
+# RocketMQ 事件总线：SSE 跨实例广播 + LLM 审计异步落库（失败自动降级直写）
+# 用法：CS_MQ_ENABLED=true ./run.sh  → run.sh 自动附加 mq profile
+# 中间件与保险理赔系统（claim-pro）公用同一套 Docker 容器栈：
+#   ops-pro/deploy/middleware-compose.yml（rocketmq-namesrv 绑 127.0.0.1:9876）
+cs:
+  mq:
+    enabled: true
+    name-server: ${CS_MQ_NAMESERVER:127.0.0.1:9876}
+    sse-topic: ${CS_MQ_SSE_TOPIC:cs_sse_event}
+    audit-topic: ${CS_MQ_AUDIT_TOPIC:cs_llm_audit}

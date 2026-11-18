@@ -31,6 +31,7 @@ public class TicketService {
     private static final long AUTO_CLOSE_MS = 7 * 86_400_000L;
 
     private final TicketMapper ticketMapper;
+    private final com.qoder.cs.common.id.IdGenerator ids;
     private final TicketNoteMapper noteMapper;
     private final SessionMapper sessionMapper;
 
@@ -60,13 +61,14 @@ public class TicketService {
             }
         }
         TicketDTO t = new TicketDTO();
-        t.setId("T" + ticketMapper.nextId());
+        t.setId("T" + ids.next("seq_ticket"));
         t.setSessionId(req.getSessionId());
         t.setUserId(userId);
         t.setCategory(category);
         t.setPriority(priority);
         t.setSummary(req.getSummary().trim());
         t.setOrderId(req.getOrderId());
+        t.setAttachments(com.qoder.cs.core.biz.UploadService.validateList(req.getAttachments()));
         t.setRequestId(req.getRequestId());
         t.setSource(source);
         t.setCreatedAt(System.currentTimeMillis());
@@ -148,7 +150,7 @@ public class TicketService {
             throw BizException.param("author/content 必填");
         }
         TicketNoteDTO n = new TicketNoteDTO();
-        n.setId("N" + noteMapper.nextId());
+        n.setId("N" + ids.next("seq_note"));
         n.setTicketId(ticketId);
         n.setAuthor(author.trim());
         n.setContent(content.trim());

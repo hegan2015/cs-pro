@@ -29,6 +29,11 @@ public class SseHub {
         return emitter;
     }
 
+    /** 当前活跃 SSE 连接数（metrics 用）。 */
+    public int activeCount() {
+        return emitters.size();
+    }
+
     public void send(String sessionId, String event, Object data) {
         SseEmitter emitter = emitters.get(sessionId);
         if (emitter == null) {

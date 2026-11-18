@@ -34,7 +34,7 @@ public class ToolService {
         List<ToolSpec> specs = new ArrayList<>();
         String role = session.getUserRole();
         if ("PASSENGER".equals(role) || "DRIVER".equals(role)) {
-            specs.add(spec("query_ride_order", "按订单号查询打车订单详情（状态/金额/司机/时间）。仅限当前用户自己的订单。",
+            specs.add(spec("query_ride_order", "按订单号查询单个打车订单详情（状态/金额/司机/时间）。仅限当前用户自己的订单；orderId 必填且须是用户明确给出的订单号，用户只想看“我的订单有哪些/列表”时应改用 list_ride_orders。",
                     Map.of("type", "object", "properties",
                             Map.of("orderId", Map.of("type", "string", "description", "订单号，如 O12")),
                             "required", List.of("orderId"))));

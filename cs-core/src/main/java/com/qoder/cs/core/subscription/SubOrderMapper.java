@@ -8,8 +8,6 @@ import java.util.List;
 @Mapper
 public interface SubOrderMapper {
 
-    @Select("SELECT NEXT VALUE FOR seq_sub_order")
-    long nextId();
 
     @Insert("INSERT INTO cs_sub_order(id, tenant_id, amount, days, request_id, status, created_at) " +
             "VALUES(#{id}, #{tenantId}, #{amount}, #{days}, #{requestId}, #{status}, #{createdAt})")

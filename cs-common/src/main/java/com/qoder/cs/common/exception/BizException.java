@@ -12,6 +12,14 @@ public class BizException extends RuntimeException {
         this.code = code;
     }
 
+    public static BizException unauthorized(String message) {
+        return new BizException(ResultCode.UNAUTHORIZED, message);
+    }
+
+    public static BizException forbidden(String message) {
+        return new BizException(ResultCode.FORBIDDEN, message);
+    }
+
     public static BizException param(String message) {
         return new BizException(ResultCode.PARAM_ERROR, message);
     }
@@ -22,6 +30,10 @@ public class BizException extends RuntimeException {
 
     public static BizException conflict(String message) {
         return new BizException(ResultCode.CONFLICT, message);
+    }
+
+    public static BizException rateLimited(String message) {
+        return new BizException(ResultCode.RATE_LIMITED, message);
     }
 
     public static BizException biz(String message) {

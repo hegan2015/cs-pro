@@ -37,6 +37,26 @@
 
   <div class="grid cols-2">
     <div class="card">
+      <h2>会话服务（人工接管）<button class="small ghost" onclick="loadSessions()">刷新</button></h2>
+      <div class="muted" style="margin-bottom:6px">用户点「转人工」后进入服务中列表；接管后智能助手暂停，回复以【人工客服】标识发送。</div>
+      <div id="sessList"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="card">
+      <h2>会话详情 <span class="muted" id="sessId"></span></h2>
+      <div id="sessMsgs" style="max-height:360px;overflow:auto"><div class="empty">点击左侧会话查看</div></div>
+      <div id="sessActions"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>坏例队列 <button class="small ghost" onclick="loadBadcases()">刷新</button></h2>
+    <div class="muted" style="margin-bottom:6px">差评 / 智能助手降级的会话；点开查看上下文，再到管理后台改进知识库。</div>
+    <div id="badcaseList"><div class="empty">加载中…</div></div>
+    <div id="badcaseDetail"></div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="card">
       <h2>工单列表 <span class="muted" id="totalInfo"></span></h2>
       <div id="list"><div class="empty">加载中…</div></div>
     </div>
@@ -99,6 +119,8 @@ async function openDetail(id) {
         ${t.priority === 'URGENT' ? '<span class="badge err">紧急</span>' : ''}
       </div>
       <p style="margin:10px 0;font-size:14px">${CS.esc(t.summary)}</p>
+      ${t.attachments ? '<div class="attach-strip">' + t.attachments.split(',').map(u =>
+        `<a href="${CS.esc(u)}" target="_blank"><img class="thumb" src="${CS.esc(u)}"></a>`).join('') + '</div>' : ''}
       <p class="muted">用户 ${CS.esc(t.userId)} · 来源 ${CS.esc(t.source)} · 创建 ${CS.time(t.createdAt)}
         ${t.orderId ? ' · 订单 ' + CS.esc(t.orderId) : ''}
         ${t.assignee ? ' · 处理人 ' + CS.esc(t.assignee) : ''}</p>
@@ -154,8 +176,133 @@ async function addNote() {
   } catch (e) { CS.toast(e.message, true); }
 }
 
+// ---- 会话人工接管 ----
+let curSess = null;
+
+async function loadSessions() {
+  try {
+    const d = await CS.get('/api/admin/sessions?status=ACTIVE&size=50');
+    const el = document.getElementById('sessList');
+    if (!d.list.length) { el.innerHTML = '<div class="empty">暂无进行中会话</div>'; return; }
+    const sorted = d.list.slice().sort((a, b) => (b.takeover ? 1 : 0) - (a.takeover ? 1 : 0));
+    el.innerHTML = '<table><tr><th>会话</th><th>用户</th><th>意图</th><th>服务方</th></tr>' +
+      sorted.map(s => `<tr style="cursor:pointer" onclick="openSession('${s.id}')">
+        <td class="mono">${s.id}</td>
+        <td>${CS.esc(s.userName || s.userId)}<span class="muted">（${CS.esc(s.userRole)}）</span></td>
+        <td>${CS.esc(s.intent || '其他')}</td>
+        <td>${s.takeover ? '<span class="badge warn">待人工</span>' : '<span class="badge ok">智能助手</span>'}</td>
+      </tr>`).join('') + '</table>';
+  } catch (e) {
+    document.getElementById('sessList').innerHTML = `<div class="empty">${CS.esc(e.message)}</div>`;
+  }
+}
+
+async function openSession(id) {
+  curSess = id;
+  document.getElementById('sessId').textContent = id;
+  await Promise.all([loadSessMsgs(), loadSessState()]);
+}
+
+async function loadSessMsgs() {
+  if (!curSess) return;
+  try {
+    const list = await CS.get('/api/admin/sessions/' + curSess + '/messages');
+    document.getElementById('sessMsgs').innerHTML =
+      (list.length ? list.map(m => `<p style="font-size:13px;margin-bottom:8px">
+        <b>${m.role === 'USER' ? CS.esc('用户') : '客服'}</b>
+        <span class="muted">${CS.time(m.createdAt)}</span><br>${CS.esc(m.content)}
+        ${m.attachments ? '<span class="attach-strip">' + m.attachments.split(',').map(u =>
+          `<a href="${CS.esc(u)}" target="_blank"><img class="thumb" src="${CS.esc(u)}"></a>`).join('') + '</span>' : ''}</p>`).join('')
+        : '<div class="empty">暂无消息</div>');
+    const box = document.getElementById('sessMsgs');
+    box.scrollTop = box.scrollHeight;
+  } catch (e) { /* 轮询失败忽略 */ }
+}
+
+async function loadSessState() {
+  if (!curSess) return;
+  try {
+    const d = await CS.get('/api/admin/sessions?status=ACTIVE&size=50');
+    const s = d.list.find(x => x.id === curSess);
+    if (!s) { document.getElementById('sessActions').innerHTML = '<div class="muted">会话已结束</div>'; return; }
+    document.getElementById('sessActions').innerHTML = s.takeover
+      ? `<div class="row" style="margin-top:10px">
+           <input id="replyInput" placeholder="以人工客服身份回复…" style="flex:1"
+                  onkeydown="if(event.key==='Enter')agentSend()">
+           <button class="small" onclick="agentSend()">回复</button>
+           <button class="small ghost" onclick="handback()">交还助手</button></div>`
+      : `<div style="margin-top:10px"><button class="small" onclick="takeover()">接管会话</button>
+           <span class="muted">接管后智能助手暂停，用户消息将排队等待人工回复</span></div>`;
+  } catch (e) { /* 忽略 */ }
+}
+
+async function takeover() {
+  try {
+    await CS.post(`/api/admin/sessions/${curSess}/takeover`, { agent: '客服' });
+    CS.toast('已接管');
+    loadSessions(); loadSessState();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function handback() {
+  try {
+    await CS.post(`/api/admin/sessions/${curSess}/handback`);
+    CS.toast('已交还智能助手');
+    loadSessions(); loadSessState();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function agentSend() {
+  const input = document.getElementById('replyInput');
+  const content = input.value.trim();
+  if (!content) return;
+  try {
+    await CS.post(`/api/admin/sessions/${curSess}/messages`, { content });
+    input.value = '';
+    loadSessMsgs();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+// ---- 坏例队列 ----
+
+async function loadBadcases() {
+  try {
+    const list = await CS.get('/api/admin/badcases?limit=20');
+    const el = document.getElementById('badcaseList');
+    if (!list.length) { el.innerHTML = '<div class="empty">暂无坏例</div>'; return; }
+    el.innerHTML = '<table><tr><th>会话</th><th>用户</th><th>原因</th><th>最近提问</th><th>引用</th></tr>' +
+      list.map(b => `<tr style="cursor:pointer" onclick="openBadcase('${b.session.id}')">
+        <td class="mono">${b.session.id}</td>
+        <td>${CS.esc(b.session.userName || b.session.userId)}</td>
+        <td>${b.reasons.map(r => '<span class="badge warn">' + CS.esc(r) + '</span>').join(' ')}</td>
+        <td>${CS.esc(b.lastUser || '')}</td>
+        <td class="mono">${CS.esc(b.kbRefs || '-')}</td></tr>`).join('') + '</table>';
+  } catch (e) {
+    document.getElementById('badcaseList').innerHTML = `<div class="empty">${CS.esc(e.message)}</div>`;
+  }
+}
+
+async function openBadcase(id) {
+  try {
+    const list = await CS.get('/api/admin/sessions/' + id + '/messages');
+    document.getElementById('badcaseDetail').innerHTML =
+      `<h3 style="margin-top:12px">会话上下文 <span class="mono">${id}</span>
+        <a href="admin.html" target="_blank"><button class="small ghost">去 KB 编辑</button></a></h3>
+      <div style="max-height:300px;overflow:auto">` +
+      (list.length ? list.map(m => `<p style="font-size:13px;margin-bottom:8px">
+        <b>${m.role === 'USER' ? '用户' : '机器人'}</b>
+        <span class="muted">${CS.time(m.createdAt)}</span>
+        ${m.kbRefs ? '<span class="mono muted"> refs:' + CS.esc(m.kbRefs) + '</span>' : ''}
+        <br>${CS.esc(m.content)}</p>`).join('')
+        : '<div class="empty">暂无消息</div>') + '</div>';
+  } catch (e) { CS.toast(e.message, true); }
+}
+
 document.getElementById('token').value = localStorage.getItem(CS.tokenKey) || '';
 loadList();
+loadSessions();
+loadBadcases();
+setInterval(() => { loadSessions(); loadSessMsgs(); }, 5000);
 </script>
 </body>
 </html>

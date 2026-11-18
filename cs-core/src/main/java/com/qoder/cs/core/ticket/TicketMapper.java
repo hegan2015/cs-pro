@@ -8,11 +8,9 @@ import java.util.List;
 @Mapper
 public interface TicketMapper {
 
-    @Select("SELECT NEXT VALUE FOR seq_ticket")
-    long nextId();
 
-    @Insert("INSERT INTO cs_ticket(id, session_id, user_id, category, priority, summary, order_id, status, assignee, request_id, source, created_at) " +
-            "VALUES(#{id}, #{sessionId}, #{userId}, #{category}, #{priority}, #{summary}, #{orderId}, 'OPEN', #{assignee}, #{requestId}, #{source}, #{createdAt})")
+    @Insert("INSERT INTO cs_ticket(id, session_id, user_id, category, priority, summary, order_id, status, assignee, request_id, source, attachments, created_at) " +
+            "VALUES(#{id}, #{sessionId}, #{userId}, #{category}, #{priority}, #{summary}, #{orderId}, 'OPEN', #{assignee}, #{requestId}, #{source}, #{attachments}, #{createdAt})")
     int insert(TicketDTO ticket);
 
     @Select("SELECT * FROM cs_ticket WHERE id = #{id}")

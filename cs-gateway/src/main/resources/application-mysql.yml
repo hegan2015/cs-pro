@@ -1,0 +1,15 @@
+# 商用持久层：MySQL（启动前用 mysql 客户端执行 db/schema-mysql.sql，或跑迁移工具）
+# 用法：CS_DB_MODE=mysql ./run.sh  → run.sh 自动附加 --spring.profiles.active=mysql
+spring:
+  datasource:
+    url: ${CS_MYSQL_URL:jdbc:mysql://127.0.0.1:3306/cs_pro?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${CS_MYSQL_USER:cspro}
+    password: ${CS_MYSQL_PASSWORD:cspro-dev-2026}
+  sql:
+    init:
+      mode: never
+
+cs:
+  db:
+    mode: mysql

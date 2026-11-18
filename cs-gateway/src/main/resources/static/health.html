@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>健康状态 · cs-pro</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<div class="topbar">
+  <h1>健康状态</h1>
+  <span class="sub" id="updatedAt"></span>
+  <span class="spacer"></span>
+  <a href="admin.html">管理后台</a>
+  <a href="index.html">首页</a>
+</div>
+<div class="wrap">
+  <div class="card">
+    <h2>组件状态 <button class="small ghost" onclick="refresh()">刷新</button></h2>
+    <div id="components"><div class="empty">加载中…</div></div>
+    <p class="muted" style="margin-top:8px">每 5 秒自动刷新。管理令牌取自本地存储（默认 cs-admin）。</p>
+  </div>
+  <div class="card">
+    <h2>指标</h2>
+    <p class="muted">Prometheus 文本指标（会话/消息/LLM 调用与 token/熔断/活跃 SSE）：
+      <a href="/api/admin/metrics" target="_blank">/api/admin/metrics</a>（需 X-Admin-Token 头）。</p>
+    <pre id="metricsPreview" class="mono" style="white-space:pre-wrap;max-height:320px;overflow:auto"></pre>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+function badge(ok, label) {
+  return `<span class="badge ${ok ? 'ok' : 'err'}">${label}</span>`;
+}
+
+async function refresh() {
+  try {
+    const d = await CS.get('/api/admin/health');
+    const rows = [];
+    rows.push(['服务', badge(d.status === 'UP', d.status), '运行 ' + Math.round(d.uptimeMs / 1000) + 's']);
+    rows.push(['数据库', badge(true, d.db.mode.toUpperCase()), '持久层模式']);
+    rows.push(['RocketMQ', badge(d.mq.active, d.mq.active ? '激活' : '未启用'), '事件总线 / 跨实例 SSE']);
+    rows.push(['LLM', badge(d.llm.available, d.llm.available ? '可用' : (d.llm.configured ? '熔断/不可用' : '未配置')),
+      d.llm.configured ? d.llm.model : 'FAQ 降级模式']);
+    rows.push(['ride-pro', badge(d.upstream.ridePro, d.upstream.ridePro ? '在线' : '离线'), '打车查询上游']);
+    rows.push(['payment-pro', badge(d.upstream.paymentPro, d.upstream.paymentPro ? '已接入' : '未接入'), '支付查询上游']);
+    rows.push(['主动服务', badge(d.proactive.enabled, d.proactive.enabled ? '开启' : '关闭'), '异常事件轮询推送']);
+    document.getElementById('components').innerHTML =
+      '<table><tr><th>组件</th><th>状态</th><th>说明</th></tr>' +
+      rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td class="muted">${r[2]}</td></tr>`).join('') + '</table>';
+    document.getElementById('updatedAt').textContent = '更新于 ' + CS.time(Date.now());
+  } catch (e) {
+    document.getElementById('components').innerHTML = '<div class="empty">健康详情不可达：' + CS.esc(e.message) + '</div>';
+  }
+  try {
+    const resp = await fetch('/api/admin/metrics', { headers: { 'X-Admin-Token': localStorage.getItem(CS.tokenKey) || 'cs-admin' } });
+    document.getElementById('metricsPreview').textContent = await resp.text();
+  } catch (e) { /* 指标预览非关键 */ }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

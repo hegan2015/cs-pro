@@ -7,6 +7,10 @@ const CS = {
     if (path.startsWith('/api/admin/')) {
       headers['X-Admin-Token'] = localStorage.getItem(this.tokenKey) || 'cs-admin';
     }
+    if (path.startsWith('/api/sessions/')) {
+      const st = localStorage.getItem('cs-session-token');
+      if (st) headers['X-Session-Token'] = st;
+    }
     const resp = await fetch(path, Object.assign({}, opts, { headers }));
     let body;
     try { body = await resp.json(); } catch (e) { throw new Error('HTTP ' + resp.status); }

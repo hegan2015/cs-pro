@@ -21,6 +21,10 @@ spring:
       schema-locations: classpath:schema.sql
   jackson:
     default-property-inclusion: non_null
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
   web:
     resources:
       cache:
@@ -32,6 +36,22 @@ mybatis:
     map-underscore-to-camel-case: true
 
 cs:
+  db:
+    mode: ${CS_DB_MODE:h2}
+  chat:
+    # 每租户 LLM 并发上限（0=不限）；超限立即 429
+    tenant-concurrency: ${CS_TENANT_CONCURRENCY:2}
+  kb:
+    # TopK 检索结果缓存 TTL（毫秒，0=关闭）；KB 变更即时失效
+    cache-ttl-ms: ${CS_KB_CACHE_TTL_MS:30000}
+  uploads:
+    dir: ${DATA_DIR:./data}/uploads
+  proactive:
+    # 主动服务轮询（ride 超时订单 / payment 失败支付单）；上游未跑自动跳过
+    enabled: ${CS_PROACTIVE_ENABLED:true}
+    interval-ms: ${CS_PROACTIVE_INTERVAL_MS:60000}
+    lookback-hours: 24
+    max-per-poll: 10
   ride:
     base-url: ${RIDE_BASE_URL:http://127.0.0.1:8090}
   pp:
@@ -39,6 +59,8 @@ cs:
     app-id: ${app-id:}
     app-secret: ${app-secret:}
     cert-path: ${cert-path:}
+    # 主动服务用内部只读 API（留空=禁用 payment 事件源）
+    poll-base-url: ${CS_PP_POLL_BASE_URL:http://127.0.0.1:8080}
   admin:
     token: ${ADMIN_TOKEN:cs-admin}
 

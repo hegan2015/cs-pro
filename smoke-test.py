@@ -64,40 +64,48 @@ s, b = call("GET", "/api/kb/search?q=" + urllib.request.quote("打车计价"))
 hits = ok("FAQ 检索", s, b)
 check("FAQ 命中计价条目", bool(hits) and "计价" in hits[0]["entry"]["question"], str(hits)[:150])
 
-# 3. 订阅状态（免费模式）
-s, b = call("GET", f"/api/subscription/status?tenantCode=ride-pro&userId=SMOKE-{RAND}")
+# 3. 订阅状态（免费模式）：独立免费租户（ride-pro 可能已被历史兑换订阅，额度用例不可复用）
+FREE_TENANT = f"SMOKE-FREE-{RAND}"
+s, b = call("POST", "/api/admin/tenants", {"code": FREE_TENANT, "name": "冒烟免费租户"}, ADMIN)
+ok("创建免费租户", s, b)
+s, b = call("GET", f"/api/subscription/status?tenantCode={FREE_TENANT}&userId=SMOKE-{RAND}")
 st = ok("订阅状态查询", s, b)
+check("未订阅状态", st["subscribed"] is False, str(st.get("subscribed")))
 check("默认免费额度 5", st["freeUsage"]["limit"] == 5, str(st.get("freeUsage")))
 
 # 4. 会话 + 免费 FAQ 限次
 uid = f"SMOKE-P-{RAND}"
-s, b = call("POST", "/api/sessions", {"userRole": "PASSENGER", "userId": uid, "userName": "冒烟乘客"})
+s, b = call("POST", "/api/sessions", {"userRole": "PASSENGER", "userId": uid, "userName": "冒烟乘客", "tenantCode": FREE_TENANT})
 sess = ok("创建会话", s, b)
 sid = sess["id"]
-check("默认租户 ride-pro", sess["tenantCode"] == "ride-pro")
+check("免费租户会话", sess["tenantCode"] == FREE_TENANT)
+check("会话返回访问凭证", bool(sess.get("accessToken")), str(sess.get("accessToken"))[:12])
+STOKEN = {"X-Session-Token": sess["accessToken"]}
+s, b = call("POST", "/api/sessions", {"userRole": "PASSENGER", "userId": uid + "-D", "userName": "默认映射"})
+check("缺省角色映射 ride-pro", ok("默认租户 ride-pro", s, b)["tenantCode"] == "ride-pro")
 
-s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "打车怎么计价？"})
+s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "打车怎么计价？"}, STOKEN)
 bot = ok("FAQ 直答", s, b)
 check("直答含起步价且带知识库引用", "起步价" in bot["content"] and bot.get("kbRefs"), bot["content"][:80])
 first_bot_id = bot["id"]
 
 for i in range(4):
-    s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "退款多久到账？"})
+    s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "退款多久到账？"}, STOKEN)
     ok(f"免费额度第 {i + 2} 条", s, b)
-s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "提现多久到账？"})
+s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "提现多久到账？"}, STOKEN)
 check("第 6 条超额拒绝 409/A0409", s == 409 and b.get("code") == "A0409", f"status={s} code={b.get('code')}")
 
 # 5. 激活码开通 + 重复兑换拒绝
 s, b = call("POST", "/api/admin/codes/generate", {"days": 30, "count": 1}, ADMIN)
 codes = ok("生成激活码", s, b)
 code = codes[0]["code"]
-s, b = call("POST", "/api/subscription/redeem", {"tenantCode": "ride-pro", "code": code})
+s, b = call("POST", "/api/subscription/redeem", {"tenantCode": FREE_TENANT, "code": code})
 sub = ok("激活码兑换开通", s, b)
 check("订阅 30 天生效", sub["expireAt"] > time.time() * 1000 + 29 * 86400000)
-s, b = call("POST", "/api/subscription/redeem", {"tenantCode": "ride-pro", "code": code})
+s, b = call("POST", "/api/subscription/redeem", {"tenantCode": FREE_TENANT, "code": code})
 check("重复兑换拒绝 409", s == 409, f"status={s}")
 
-s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "打车怎么计价？"})
+s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "打车怎么计价？"}, STOKEN)
 bot2 = ok("订阅后不限次（无 Key 降级 FAQ）", s, b)
 check("降级提示或 FAQ 答案", "智能助手暂不可用" in bot2["content"] or "起步价" in bot2["content"], bot2["content"][:80])
 
@@ -134,9 +142,9 @@ s, b = call("POST", "/api/ratings", {"targetType": "MESSAGE", "targetId": first_
 check("重复评分拒绝 409", s == 409, f"status={s}")
 
 # 8. 会话结束
-s, b = call("POST", f"/api/sessions/{sid}/end")
+s, b = call("POST", f"/api/sessions/{sid}/end", {}, STOKEN)
 ok("结束会话", s, b)
-s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "还在吗"})
+s, b = call("POST", f"/api/sessions/{sid}/messages", {"content": "还在吗"}, STOKEN)
 check("已结束会话拒绝消息 409", s == 409, f"status={s}")
 
 # 9. FAQ 管理 CRUD
@@ -166,10 +174,13 @@ s, b = call("GET", "/api/admin/stats/daily?days=7", headers=ADMIN)
 trend = ok("7 天趋势", s, b)
 check("趋势 7 行", len(trend) == 7)
 
-# 12. LLM 审计（无 Key 模式应有 ERROR 降级记录）
-s, b = call("GET", "/api/admin/llm-calls?status=ERROR", headers=ADMIN)
-calls = ok("LLM 审计查询", s, b)
-check("降级调用有审计记录", len(calls) >= 1)
+# 12. LLM 审计（有 Key 出 OK；无 Key/降级出 ERROR/FALLBACK；对库历史不敏感）
+audit_rows = 0
+for st in ("OK", "ERROR", "FALLBACK"):
+    s, b = call("GET", f"/api/admin/llm-calls?status={st}", headers=ADMIN)
+    ok(f"LLM 审计查询 {st}", s, b)
+    audit_rows += len(b.get("data") or [])
+check("LLM 审计有记录", audit_rows >= 1, f"rows={audit_rows}")
 
 # 13. 静态页面
 for page in ["/", "/chat.html", "/subscription.html", "/agent.html", "/admin.html"]:

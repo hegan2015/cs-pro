@@ -6,6 +6,7 @@ import lombok.Data;
 public class SubscriptionDTO {
     private String tenantId;
     private String planName;
+    private String planCode;
     private Integer days;
     private String status;
     private Long startAt;

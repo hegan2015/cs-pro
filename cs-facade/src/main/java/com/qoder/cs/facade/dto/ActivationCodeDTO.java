@@ -6,6 +6,7 @@ import lombok.Data;
 public class ActivationCodeDTO {
     private String code;
     private Integer days;
+    private String planCode;
     private String status;
     private String usedByTenant;
     private Long usedAt;

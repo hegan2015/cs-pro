@@ -8,7 +8,8 @@ import java.util.Map;
 @Mapper
 public interface StatsMapper {
 
-    @Insert("MERGE INTO stats_daily(stat_day, metric, stat_value) KEY(stat_day, metric) VALUES(#{day}, #{metric}, #{value})")
+    @Insert("INSERT INTO stats_daily(stat_day, metric, stat_value) VALUES(#{day}, #{metric}, #{value}) " +
+            "ON DUPLICATE KEY UPDATE stat_value = VALUES(stat_value)")
     int upsertDaily(@Param("day") String day, @Param("metric") String metric, @Param("value") long value);
 
     @Select("SELECT stat_day, metric, stat_value FROM stats_daily WHERE stat_day >= #{fromDay} AND stat_day <= #{toDay} ORDER BY stat_day")

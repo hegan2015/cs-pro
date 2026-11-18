@@ -29,6 +29,7 @@ public class SubscriptionPayService {
     private static final long ORDER_TTL_MS = 30 * 60_000L;
 
     private final SubOrderMapper orderMapper;
+    private final com.qoder.cs.common.id.IdGenerator ids;
     private final TenantMapper tenantMapper;
     private final SubscriptionService subscriptionService;
     private final PaymentProClient pp;
@@ -48,7 +49,7 @@ public class SubscriptionPayService {
             throw BizException.param("payerAccountId 必填（payment-pro 付款账户）");
         }
         SubOrderDTO order = new SubOrderDTO();
-        order.setId("SO" + orderMapper.nextId());
+        order.setId("SO" + ids.next("seq_sub_order"));
         order.setTenantId(tenant.getId());
         order.setAmount(props.getPlan().getPrice());
         order.setDays(props.getPlan().getDays());

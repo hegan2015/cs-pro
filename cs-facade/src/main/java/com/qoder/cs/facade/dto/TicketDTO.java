@@ -16,6 +16,8 @@ public class TicketDTO {
     private String requestId;
     private String source;
     private String solution;
+    /** 图片附件 URL 逗号列表（/uploads/ 相对路径） */
+    private String attachments;
     private Long createdAt;
     private Long resolvedAt;
     private Long closedAt;

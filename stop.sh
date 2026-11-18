@@ -1,7 +1,9 @@
 #!/bin/bash
 # 停止 cs-gateway：SIGTERM + 15s 等待 + SIGKILL 兜底。数据保留在 data/。
 cd "$(dirname "$0")"
-f="run/cs-gateway.pid"
+PORT="${CS_PORT:-8096}"
+f="run/cs-gateway-$PORT.pid"
+[ -f "$f" ] || f="run/cs-gateway.pid"   # 兼容旧命名
 if [ ! -f "$f" ]; then
   echo "==> 无 pid 文件，未在运行"
   exit 0

@@ -52,24 +52,44 @@ public class ApiController {
     }
 
     @GetMapping("/sessions/{id}/messages")
-    public Result<List<MessageDTO>> messages(@PathVariable String id) {
+    public Result<List<MessageDTO>> messages(@PathVariable String id,
+                                             @RequestHeader(value = "X-Session-Token", required = false) String token) {
+        chat.requireAccess(id, token);
         return Result.ok(chat.messages(id));
     }
 
+    /** LLM 同步应答可能长达数十秒：走 MVC 异步（专用线程池），不占用 Tomcat 请求线程。 */
     @PostMapping("/sessions/{id}/messages")
-    public Result<MessageDTO> sendMessage(@PathVariable String id, @RequestBody Map<String, String> body) {
-        return Result.ok(chat.sendMessage(id, body.get("content")));
+    public java.util.concurrent.Callable<Result<MessageDTO>> sendMessage(
+            @PathVariable String id, @RequestBody Map<String, String> body,
+            @RequestHeader(value = "X-Session-Token", required = false) String token) {
+        return () -> {
+            chat.requireAccess(id, token);
+            return Result.ok(chat.sendMessage(id, body.get("content"), body.get("attachments")));
+        };
     }
 
     @GetMapping(value = "/sessions/{id}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@PathVariable String id) {
+    public SseEmitter stream(@PathVariable String id,
+                             @RequestParam(value = "token", required = false) String token) {
+        chat.requireAccess(id, token); // EventSource 无法设自定义头，凭证走 query
         chat.getSession(id);
         return sse.register(id);
     }
 
     @PostMapping("/sessions/{id}/end")
-    public Result<SessionDTO> endSession(@PathVariable String id) {
+    public Result<SessionDTO> endSession(@PathVariable String id,
+                                         @RequestHeader(value = "X-Session-Token", required = false) String token) {
+        chat.requireAccess(id, token);
         return Result.ok(chat.endSession(id));
+    }
+
+    /** 用户请求转人工：接管后消息排队，由客服经工作台回复。 */
+    @PostMapping("/sessions/{id}/human")
+    public Result<SessionDTO> requestHuman(@PathVariable String id,
+                                           @RequestHeader(value = "X-Session-Token", required = false) String token) {
+        chat.requireAccess(id, token);
+        return Result.ok(chat.requestHuman(id));
     }
 
     // ---- 评分 ----

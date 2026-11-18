@@ -32,10 +32,41 @@ public class AdminController {
     private final SubscriptionService subscriptions;
     private final SubscriptionPayService pay;
     private final SeedService seed;
+    private final com.qoder.cs.core.proactive.ProactiveEventMapper proactiveEvents;
+    private final com.qoder.cs.core.open.OpenKeyService openKeys;
+    private final com.qoder.cs.core.billing.InvoiceService invoices;
+    private final com.qoder.cs.core.config.CsProperties csProps;
+    private final com.qoder.cs.core.audit.AdminAuditService audit;
+    private final com.qoder.cs.core.stats.MetricsService metrics;
+    private final com.qoder.cs.core.stats.HealthService health;
+
+    private void audit(String action, String target, String detail) {
+        audit.record("admin", action, target, detail);
+    }
+
+    @GetMapping("/audit-log")
+    public Result<Map<String, Object>> auditLog(@RequestParam(required = false) String action,
+                                                @RequestParam(required = false) String actor,
+                                                @RequestParam(required = false) Long from,
+                                                @RequestParam(required = false) Long to,
+                                                @RequestParam(defaultValue = "1") int page,
+                                                @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(audit.query(action, actor, from, to, page, size));
+    }
 
     @GetMapping("/overview")
     public Result<Map<String, Object>> overview() {
         return Result.ok(stats.overview());
+    }
+
+    @GetMapping(value = "/metrics", produces = "text/plain; version=0.0.4; charset=utf-8")
+    public String metrics() {
+        return metrics.render();
+    }
+
+    @GetMapping("/health")
+    public Result<Map<String, Object>> health() {
+        return Result.ok(health.detail());
     }
 
     @GetMapping("/stats/daily")
@@ -60,6 +91,28 @@ public class AdminController {
         return Result.ok(chat.messages(id));
     }
 
+    // ---- 人工接管 ----
+
+    @PostMapping("/sessions/{id}/takeover")
+    public Result<SessionDTO> takeover(@PathVariable String id,
+                                       @RequestBody(required = false) Map<String, String> body) {
+        SessionDTO s = chat.adminSetTakeover(id, true, body == null ? null : body.get("agent"));
+        audit("SESSION_TAKEOVER", id, body == null ? null : body.get("agent"));
+        return Result.ok(s);
+    }
+
+    @PostMapping("/sessions/{id}/handback")
+    public Result<SessionDTO> handback(@PathVariable String id) {
+        SessionDTO s = chat.adminSetTakeover(id, false, null);
+        audit("SESSION_HANDBACK", id, null);
+        return Result.ok(s);
+    }
+
+    @PostMapping("/sessions/{id}/messages")
+    public Result<MessageDTO> agentSend(@PathVariable String id, @RequestBody Map<String, String> body) {
+        return Result.ok(chat.agentReply(id, body.get("content")));
+    }
+
     // ---- 工单处置 ----
 
     @GetMapping("/tickets")
@@ -81,22 +134,30 @@ public class AdminController {
 
     @PostMapping("/tickets/{id}/assign")
     public Result<TicketDTO> assign(@PathVariable String id, @RequestBody Map<String, String> body) {
-        return Result.ok(tickets.assign(id, body.get("assignee")));
+        TicketDTO t = tickets.assign(id, body.get("assignee"));
+        audit("TICKET_ASSIGN", id, body.get("assignee"));
+        return Result.ok(t);
     }
 
     @PostMapping("/tickets/{id}/resolve")
     public Result<TicketDTO> resolve(@PathVariable String id, @RequestBody Map<String, String> body) {
-        return Result.ok(tickets.resolve(id, body.get("solution")));
+        TicketDTO t = tickets.resolve(id, body.get("solution"));
+        audit("TICKET_RESOLVE", id, null);
+        return Result.ok(t);
     }
 
     @PostMapping("/tickets/{id}/close")
     public Result<TicketDTO> close(@PathVariable String id) {
-        return Result.ok(tickets.close(id));
+        TicketDTO t = tickets.close(id);
+        audit("TICKET_CLOSE", id, null);
+        return Result.ok(t);
     }
 
     @PostMapping("/tickets/{id}/notes")
     public Result<TicketNoteDTO> note(@PathVariable String id, @RequestBody Map<String, String> body) {
-        return Result.ok(tickets.addNote(id, body.getOrDefault("author", "admin"), body.get("content")));
+        TicketNoteDTO n = tickets.addNote(id, body.getOrDefault("author", "admin"), body.get("content"));
+        audit("TICKET_NOTE", id, null);
+        return Result.ok(n);
     }
 
     // ---- FAQ 管理 ----
@@ -108,18 +169,55 @@ public class AdminController {
 
     @PostMapping("/kb")
     public Result<KbEntryDTO> kbCreate(@RequestBody KbUpsertRequest req) {
-        return Result.ok(kb.create(req));
+        KbEntryDTO e = kb.create(req);
+        audit("KB_CREATE", e.getId(), req.getQuestion());
+        return Result.ok(e);
     }
 
     @PutMapping("/kb/{id}")
     public Result<KbEntryDTO> kbUpdate(@PathVariable String id, @RequestBody KbUpsertRequest req) {
-        return Result.ok(kb.update(id, req));
+        KbEntryDTO e = kb.update(id, req);
+        audit("KB_UPDATE", id, req.getQuestion());
+        return Result.ok(e);
     }
 
     @DeleteMapping("/kb/{id}")
     public Result<Void> kbDelete(@PathVariable String id) {
         kb.delete(id);
+        audit("KB_DELETE", id, null);
         return Result.ok(null);
+    }
+
+    @GetMapping("/kb/{id}/versions")
+    public Result<List<KbRevisionDTO>> kbVersions(@PathVariable String id) {
+        return Result.ok(kb.listVersions(id));
+    }
+
+    @PostMapping("/kb/{id}/rollback/{revisionId}")
+    public Result<KbEntryDTO> kbRollback(@PathVariable String id, @PathVariable long revisionId) {
+        KbEntryDTO e = kb.rollback(id, revisionId);
+        audit("KB_ROLLBACK", id, "revision=" + revisionId);
+        return Result.ok(e);
+    }
+
+    @GetMapping("/kb/citation-stats")
+    public Result<List<Map<String, Object>>> kbCitationStats() {
+        return Result.ok(kb.citationStats());
+    }
+
+    // ---- 坏例队列 ----
+
+    @GetMapping("/badcases")
+    public Result<List<Map<String, Object>>> badcases(@RequestParam(defaultValue = "20") int limit) {
+        return Result.ok(chat.badcases(limit));
+    }
+
+    // ---- 主动服务事件 ----
+
+    @GetMapping("/proactive-events")
+    public Result<List<com.qoder.cs.facade.dto.ProactiveEventDTO>> proactiveEvents(
+            @RequestParam(defaultValue = "50") int limit) {
+        return Result.ok(proactiveEvents.recent(Math.min(limit, 100)));
     }
 
     // ---- LLM 审计 ----
@@ -140,12 +238,15 @@ public class AdminController {
 
     @PostMapping("/tenants")
     public Result<TenantDTO> createTenant(@RequestBody Map<String, String> body) {
-        return Result.ok(subscriptions.createTenant(body.get("code"), body.get("name")));
+        TenantDTO t = subscriptions.createTenant(body.get("code"), body.get("name"));
+        audit("TENANT_CREATE", t.getCode(), body.get("name"));
+        return Result.ok(t);
     }
 
     @PostMapping("/tenants/{id}/status")
     public Result<Void> tenantStatus(@PathVariable String id, @RequestBody Map<String, String> body) {
         subscriptions.setTenantStatus(id, body.get("status"));
+        audit("TENANT_STATUS", id, body.get("status"));
         return Result.ok(null);
     }
 
@@ -153,7 +254,9 @@ public class AdminController {
     public Result<List<ActivationCodeDTO>> generateCodes(@RequestBody Map<String, Object> body) {
         int days = body.get("days") == null ? 30 : ((Number) body.get("days")).intValue();
         int count = body.get("count") == null ? 1 : ((Number) body.get("count")).intValue();
-        return Result.ok(subscriptions.generateCodes(days, count));
+        List<ActivationCodeDTO> codes = subscriptions.generateCodes(days, count, (String) body.get("planCode"));
+        audit("CODE_GENERATE", null, "days=" + days + " count=" + count + " plan=" + body.get("planCode"));
+        return Result.ok(codes);
     }
 
     @GetMapping("/codes")
@@ -170,7 +273,9 @@ public class AdminController {
     public Result<SubscriptionDTO> grant(@RequestBody Map<String, Object> body) {
         String tenantId = (String) body.get("tenantId");
         int days = body.get("days") == null ? 30 : ((Number) body.get("days")).intValue();
-        return Result.ok(subscriptions.grant(tenantId, days));
+        SubscriptionDTO sub = subscriptions.grant(tenantId, days);
+        audit("SUB_GRANT", tenantId, "days=" + days);
+        return Result.ok(sub);
     }
 
     @GetMapping("/sub-orders")
@@ -181,6 +286,48 @@ public class AdminController {
     @PostMapping("/seed")
     public Result<Void> reseed() {
         seed.seed();
+        audit("SEED", null, null);
         return Result.ok(null);
+    }
+
+    // ---- 开放 API 凭证 ----
+
+    @PostMapping("/open-keys")
+    public Result<OpenKeyDTO> createOpenKey(@RequestBody Map<String, String> body) {
+        OpenKeyDTO k = openKeys.generate(body.get("tenantCode"));
+        audit("OPENKEY_CREATE", body.get("tenantCode"), k.getApiKey());
+        return Result.ok(k);
+    }
+
+    @GetMapping("/open-keys")
+    public Result<List<OpenKeyDTO>> openKeys(@RequestParam(required = false) String tenantCode) {
+        return Result.ok(openKeys.list(tenantCode));
+    }
+
+    @PostMapping("/open-keys/{apiKey}/revoke")
+    public Result<Void> revokeOpenKey(@PathVariable String apiKey) {
+        openKeys.revoke(apiKey);
+        audit("OPENKEY_REVOKE", apiKey, null);
+        return Result.ok(null);
+    }
+
+    // ---- 套餐目录与月度账单 ----
+
+    @GetMapping("/plans")
+    public Result<Map<String, com.qoder.cs.core.config.CsProperties.PlanSpec>> plans() {
+        return Result.ok(csProps.getPlans());
+    }
+
+    @PostMapping("/invoices/generate")
+    public Result<InvoiceDTO> generateInvoice(@RequestBody Map<String, String> body) {
+        InvoiceDTO inv = invoices.generate(body.get("tenantCode"), body.get("period"));
+        audit("INVOICE_GENERATE", body.get("tenantCode"), body.get("period") + " amount=" + inv.getAmount());
+        return Result.ok(inv);
+    }
+
+    @GetMapping("/invoices")
+    public Result<List<InvoiceDTO>> invoices(@RequestParam(required = false) String tenantCode,
+                                             @RequestParam(required = false) String period) {
+        return Result.ok(invoices.list(tenantCode, period));
     }
 }

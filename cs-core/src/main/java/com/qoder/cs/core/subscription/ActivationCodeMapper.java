@@ -8,7 +8,8 @@ import java.util.List;
 @Mapper
 public interface ActivationCodeMapper {
 
-    @Insert("INSERT INTO cs_activation_code(code, days, status, created_at) VALUES(#{code}, #{days}, 'UNUSED', #{createdAt})")
+    @Insert("INSERT INTO cs_activation_code(code, days, plan_code, status, created_at) " +
+            "VALUES(#{code}, #{days}, #{planCode}, 'UNUSED', #{createdAt})")
     int insert(ActivationCodeDTO code);
 
     @Select("SELECT * FROM cs_activation_code WHERE code = #{code}")

@@ -8,8 +8,6 @@ import java.util.List;
 @Mapper
 public interface TicketNoteMapper {
 
-    @Select("SELECT NEXT VALUE FOR seq_note")
-    long nextId();
 
     @Insert("INSERT INTO cs_ticket_note(id, ticket_id, author, content, created_at) " +
             "VALUES(#{id}, #{ticketId}, #{author}, #{content}, #{createdAt})")

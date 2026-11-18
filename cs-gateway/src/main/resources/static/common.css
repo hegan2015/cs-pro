@@ -96,6 +96,7 @@ tr:hover td { background: #fafaff; }
 .msg.user { justify-content: flex-end; }
 .msg.user .bubble { background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
 .msg.bot .bubble { background: #fff; border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.msg.bot .bubble.aborted { border-color: var(--warn); }
 .msg .meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .msg.bot .meta a { cursor: pointer; margin-right: 8px; }
 .draft-card {
@@ -113,4 +114,9 @@ tr:hover td { background: #fafaff; }
 @media (max-width: 640px) {
   .wrap { padding: 10px; }
   .msg .bubble { max-width: 88%; }
+}.attach-strip { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.attach-item { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; }
+.thumb {
+  width: 72px; height: 72px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--border); display: block;
 }

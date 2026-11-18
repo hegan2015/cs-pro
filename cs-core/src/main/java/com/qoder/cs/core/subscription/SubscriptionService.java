@@ -33,6 +33,7 @@ public class SubscriptionService {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final TenantMapper tenantMapper;
+    private final com.qoder.cs.common.id.IdGenerator ids;
     private final ActivationCodeMapper codeMapper;
     private final CsProperties props;
     private final TransactionTemplate tx;
@@ -49,7 +50,7 @@ public class SubscriptionService {
             return existing;
         }
         TenantDTO t = new TenantDTO();
-        t.setId("TN" + tenantMapper.nextId());
+        t.setId("TN" + ids.next("seq_tenant"));
         t.setCode(code);
         t.setName(name);
         t.setCreatedAt(System.currentTimeMillis());
@@ -114,6 +115,8 @@ public class SubscriptionService {
         out.put("subscription", sub);
         out.put("plan", Map.of("name", props.getPlan().getName(),
                 "days", props.getPlan().getDays(), "price", props.getPlan().getPrice()));
+        out.put("planCode", sub != null && sub.getPlanCode() != null ? sub.getPlanCode() : "free");
+        out.put("plans", props.getPlans());
         Map<String, Object> free = new LinkedHashMap<>();
         free.put("limit", props.getFree().getDailyQuota());
         free.put("used", userId == null ? 0 : freeUsed(userId));
@@ -123,15 +126,21 @@ public class SubscriptionService {
 
     /** 续订叠加：newExpire = max(now, 当前expire) + days。 */
     public SubscriptionDTO extend(String tenantId, int days, String source) {
+        return extend(tenantId, days, source, "standard");
+    }
+
+    public SubscriptionDTO extend(String tenantId, int days, String source, String planCode) {
         if (days <= 0 || days > 3650) {
             throw BizException.param("days 越界");
         }
+        String code = planCode == null || planCode.isBlank() ? "standard" : planCode;
         long now = System.currentTimeMillis();
         SubscriptionDTO cur = tenantMapper.selectSubscription(tenantId);
         long base = cur != null && cur.getExpireAt() > now ? cur.getExpireAt() : now;
         SubscriptionDTO sub = new SubscriptionDTO();
         sub.setTenantId(tenantId);
-        sub.setPlanName(props.getPlan().getName());
+        sub.setPlanName(props.planSpec(code).getName());
+        sub.setPlanCode(code);
         sub.setDays(days);
         sub.setStatus("ACTIVE");
         sub.setStartAt(cur != null && cur.getExpireAt() > now ? cur.getStartAt() : now);
@@ -139,22 +148,31 @@ public class SubscriptionService {
         sub.setSource(source);
         sub.setUpdatedAt(now);
         tenantMapper.upsertSubscription(sub);
-        log.info("订阅开通/续订 tenant={} days={} source={} expireAt={}", tenantId, days, source, sub.getExpireAt());
+        log.info("订阅开通/续订 tenant={} days={} plan={} source={} expireAt={}", tenantId, days, code, source, sub.getExpireAt());
         return sub;
     }
 
     public List<ActivationCodeDTO> generateCodes(int days, int count) {
+        return generateCodes(days, count, "standard");
+    }
+
+    public List<ActivationCodeDTO> generateCodes(int days, int count, String planCode) {
         if (days <= 0 || days > 3650) {
             throw BizException.param("days 越界");
         }
         if (count <= 0 || count > 100) {
             throw BizException.param("count 需 1-100");
         }
+        String code = planCode == null || planCode.isBlank() ? "standard" : planCode;
+        if (!props.getPlans().containsKey(code)) {
+            throw BizException.param("未知套餐: " + code);
+        }
         List<ActivationCodeDTO> codes = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             ActivationCodeDTO c = new ActivationCodeDTO();
             c.setCode(randomCode());
             c.setDays(days);
+            c.setPlanCode(code);
             c.setCreatedAt(System.currentTimeMillis());
             codeMapper.insert(c);
             codes.add(c);
@@ -178,7 +196,7 @@ public class SubscriptionService {
                 throw BizException.conflict("激活码无效或已被使用");
             }
             ActivationCodeDTO c = codeMapper.selectByCode(normalized);
-            return extend(t.getId(), c.getDays(), "CODE");
+            return extend(t.getId(), c.getDays(), "CODE", c.getPlanCode());
         });
     }
 

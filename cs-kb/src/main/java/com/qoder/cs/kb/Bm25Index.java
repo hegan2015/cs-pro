@@ -1,5 +1,7 @@
 package com.qoder.cs.kb;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -7,6 +9,7 @@ import java.util.regex.Pattern;
 /**
  * 中文 BM25 倒排索引（零依赖）。
  * 分词：ASCII 字母数字词 + CJK 单字与相邻二元组（bigram 携带更多语义）。
+ * 查询扩展：同义词表（classpath:/synonyms.txt，每行逗号分组）命中时把同组词并入查询，弥补无分词的召回短板。
  * 线程安全：rebuild 生成新索引后原子替换引用，读路径无锁。
  */
 public class Bm25Index {
@@ -14,6 +17,8 @@ public class Bm25Index {
     private static final Pattern ASCII_WORD = Pattern.compile("[a-z0-9]+");
     private static final double K1 = 1.5;
     private static final double B = 0.75;
+
+    private static final List<String[]> SYN_GROUPS = loadSynonyms();
 
     public record Scored(String id, double score) {
     }
@@ -49,6 +54,7 @@ public class Bm25Index {
             return List.of();
         }
         Map<String, Integer> qtf = tokenize(query);
+        expandSynonyms(query.toLowerCase(Locale.ROOT), qtf);
         int n = s.docs().size();
         List<Scored> result = new ArrayList<>();
         for (Doc doc : s.docs()) {
@@ -113,5 +119,55 @@ public class Bm25Index {
             }
         }
         cjk.setLength(0);
+    }
+
+    /** 查询句中出现组内任一词，则把组内其余词的 term 并入查询（权重 1，不改变已有权重）。 */
+    private static void expandSynonyms(String lowerQuery, Map<String, Integer> qtf) {
+        for (String[] group : SYN_GROUPS) {
+            boolean hit = false;
+            for (String word : group) {
+                if (lowerQuery.contains(word)) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) {
+                continue;
+            }
+            for (String word : group) {
+                if (lowerQuery.contains(word)) {
+                    continue;
+                }
+                for (String term : tokenize(word).keySet()) {
+                    qtf.merge(term, 1, Math::max);
+                }
+            }
+        }
+    }
+
+    private static List<String[]> loadSynonyms() {
+        List<String[]> groups = new ArrayList<>();
+        try (InputStream in = Bm25Index.class.getResourceAsStream("/synonyms.txt")) {
+            if (in == null) {
+                return List.of();
+            }
+            for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith("#")) {
+                    continue;
+                }
+                String[] words = Arrays.stream(t.split("[,，]"))
+                        .map(w -> w.trim().toLowerCase(Locale.ROOT))
+                        .filter(w -> !w.isEmpty())
+                        .distinct()
+                        .toArray(String[]::new);
+                if (words.length >= 2) {
+                    groups.add(words);
+                }
+            }
+        } catch (Exception e) {
+            // 同义词表加载失败不影响检索主链路
+        }
+        return List.copyOf(groups);
     }
 }

@@ -16,6 +16,12 @@ mybatis:
 cs:
   free:
     daily-quota: 5
+  chat:
+    tenant-concurrency: 1
+  proactive:
+    enabled: false
+  uploads:
+    dir: ./target/test-uploads
 
 logging:
   level:

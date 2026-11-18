@@ -10,4 +10,5 @@ public class TicketCreateRequest {
     private String orderId;
     private String priority;
     private String requestId;
+    private String attachments;
 }

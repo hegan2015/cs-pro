@@ -8,11 +8,9 @@ import java.util.List;
 @Mapper
 public interface MessageMapper {
 
-    @Select("SELECT NEXT VALUE FOR seq_message")
-    long nextId();
 
-    @Insert("INSERT INTO cs_message(id, session_id, role, content, tool_name, tool_result, kb_refs, ticket_draft, latency_ms, tokens, created_at) " +
-            "VALUES(#{id}, #{sessionId}, #{role}, #{content}, #{toolName}, #{toolResult}, #{kbRefs}, #{ticketDraft}, #{latencyMs}, #{tokens}, #{createdAt})")
+    @Insert("INSERT INTO cs_message(id, session_id, role, content, tool_name, tool_result, kb_refs, ticket_draft, tool_trace, attachments, latency_ms, tokens, created_at) " +
+            "VALUES(#{id}, #{sessionId}, #{role}, #{content}, #{toolName}, #{toolResult}, #{kbRefs}, #{ticketDraft}, #{toolTrace}, #{attachments}, #{latencyMs}, #{tokens}, #{createdAt})")
     int insert(MessageDTO message);
 
     @Select("SELECT * FROM cs_message WHERE id = #{id}")

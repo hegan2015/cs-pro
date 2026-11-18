@@ -1,9 +1,29 @@
 # LLM 配置示例：复制为 ~/.config/cs-pro/llm.properties（仓库外，chmod 600）填入 Key 后重启 cs-pro 生效。
 # 放仓库外避免密钥随代码分发；仓库内 config/llm.properties 也兼容（gitignore），但推荐仓库外。
 # OpenAI 兼容协议均可：OpenAI / DeepSeek / 通义 / Kimi / 本地 Ollama 等。
+# DeepSeek 示例：base-url=https://api.deepseek.com/v1，model=deepseek-flash（官方 V4.1-Flash 系列）；
+#   注意官方模型 ID 与第三方平台不同（如百炼为 deepseek-v4.1-flash-1017），跨平台抄名字会 404。
 cs.llm.base-url=https://api.openai.com/v1
 cs.llm.api-key=
 cs.llm.model=gpt-4o-mini
 cs.llm.temperature=0.3
 cs.llm.max-tokens=1024
+# 分级 max-tokens：查询类意图（计价/退款/提现/支付/账号）与工具轮用 query，投诉/开放类最终回答用 report
+cs.llm.max-tokens-query=512
+cs.llm.max-tokens-report=2048
 cs.llm.timeout-ms=60000
+# 备用供应商端点：主端点重试耗尽且未出流时自动路由（留空=不启用）；model/api-key 留空沿用主端点
+cs.llm.base-url-backup=
+cs.llm.model-backup=
+cs.llm.api-key-backup=
+# 视觉模型：用户附图片的消息改用此模型（同端点；留空=沿用主模型，需主模型支持视觉）
+cs.llm.vision-model=
+# 系统提示版本号（随 cs_llm_call 审计落库，用于提示词效果对比）
+cs.llm.prompt-version=v1.2.0
+# 输出侧 PII 打码（手机号/身份证/银行卡号），仅作用于 LLM 生成内容
+cs.llm.mask-pii=true
+# 可重试错误（429/5xx/网络超时）额外重试次数与指数退避基数；4xx 与已流式输出的不重试
+cs.llm.retry-max=2
+cs.llm.retry-backoff-ms=1000
+# 租户日 token 预算（prompt+completion），0=不限；超限当日该租户自动降级 FAQ 并留 BUDGET 审计
+cs.llm.daily-token-budget-per-tenant=0

@@ -11,5 +11,7 @@ public class KbEntryDTO {
     private String keywords;
     private Boolean enabled;
     private Long hitCount;
+    private Long citedCount;
+    private Long citedResolvedCount;
     private Long updatedAt;
 }

@@ -39,6 +39,11 @@
       <div class="card"><h2>系统状态</h2><div id="sysStatus"></div></div>
     </div>
     <div class="card"><h2>热门 FAQ</h2><div id="hotFaq"></div></div>
+    <div class="card">
+      <h2>知识库引用解决率</h2>
+      <div class="muted" style="margin-bottom:6px">近似口径：被引用满 7 天观察期、会话后续 7 天无工单且会话无差评 = 已解决。</div>
+      <div id="kbCitation"></div>
+    </div>
   </div>
 
   <div id="tab-sessions" style="display:none">
@@ -66,9 +71,16 @@
       </div>
       <label style="margin-top:8px">答案</label><textarea id="kbA"></textarea>
       <label style="margin-top:8px">关键词（逗号分隔，可选）</label><input id="kbKw">
-      <div style="margin-top:10px"><button onclick="kbCreate()">新增</button></div>
+      <div style="margin-top:10px">
+        <button id="kbSaveBtn" onclick="kbSave()">新增</button>
+        <button class="ghost" onclick="kbEditCancel()">取消编辑</button>
+      </div>
     </div>
     <div class="card"><h2>FAQ 列表 <span class="muted" id="kbCount"></span></h2><div id="kbList"></div></div>
+    <div class="card" id="kbVerCard" style="display:none">
+      <h2>历史版本 <span class="mono" id="kbVerId"></span></h2>
+      <div id="kbVersions"></div>
+    </div>
   </div>
 
   <div id="tab-llm" style="display:none">
@@ -169,6 +181,13 @@ async function loadOverview() {
     '<table><tr><th>问题</th><th>分类</th><th>命中</th></tr>' + hot.map(e =>
       `<tr><td>${CS.esc(e.question)}</td><td>${CS.esc(e.category)}</td><td>${e.hitCount}</td></tr>`).join('') + '</table>'
     : '<div class="empty">暂无命中</div>';
+  const cites = await CS.get('/api/admin/kb/citation-stats');
+  document.getElementById('kbCitation').innerHTML = cites.length ?
+    '<table><tr><th>ID</th><th>问题</th><th>被引用</th><th>满7天</th><th>已解决</th><th>解决率</th></tr>' +
+    cites.map(r => `<tr><td class="mono">${r.id}</td><td>${CS.esc(r.question)}</td>
+      <td>${r.cited}</td><td>${r.matured}</td><td>${r.resolved}</td>
+      <td>${r.rate == null ? '<span class="muted">观察期未见</span>' : r.rate + '%'}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无知识库条目</div>';
 }
 
 async function loadSessions() {
@@ -191,20 +210,46 @@ async function showMsgs(id) {
     <p style="font-size:13px;margin-bottom:8px">
       <span class="badge ${m.role === 'USER' ? '' : 'gray'}">${m.role}</span>
       <span class="muted">${CS.time(m.createdAt)}${m.toolName ? ' · 工具 ' + CS.esc(m.toolName) : ''}</span><br>
-      ${CS.esc(m.content || '')}</p>`).join('') || '<div class="empty">暂无消息</div>';
+      ${CS.esc(m.content || '')}
+      ${m.attachments ? '<span class="attach-strip">' + m.attachments.split(',').map(u =>
+        `<a href="${CS.esc(u)}" target="_blank"><img class="thumb" src="${CS.esc(u)}"></a>`).join('') + '</span>' : ''}</p>`).join('') || '<div class="empty">暂无消息</div>';
 }
+
+let kbCache = [];
+let editingKb = null;
 
 async function loadKb() {
   const list = await CS.get('/api/admin/kb');
+  kbCache = list;
   document.getElementById('kbCount').textContent = '共 ' + list.length + ' 条';
-  document.getElementById('kbList').innerHTML = '<table><tr><th>ID</th><th>问题</th><th>分类</th><th>命中</th><th>启用</th><th>操作</th></tr>' +
+  document.getElementById('kbList').innerHTML = '<table><tr><th>ID</th><th>问题</th><th>分类</th><th>命中</th><th>被引用</th><th>启用</th><th>操作</th></tr>' +
     list.map(e => `<tr><td class="mono">${e.id}</td><td>${CS.esc(e.question)}</td>
-      <td>${CS.esc(e.category)}</td><td>${e.hitCount}</td>
+      <td>${CS.esc(e.category)}</td><td>${e.hitCount}</td><td>${e.citedCount || 0}</td>
       <td>${e.enabled ? '<span class="badge ok">是</span>' : '<span class="badge gray">否</span>'}</td>
-      <td><button class="small danger" onclick="kbDelete('${e.id}')">删除</button></td></tr>`).join('') + '</table>';
+      <td><button class="small ghost" onclick="kbEdit('${e.id}')">编辑</button>
+        <button class="small ghost" onclick="kbVersions('${e.id}')">版本</button>
+        <button class="small danger" onclick="kbDelete('${e.id}')">删除</button></td></tr>`).join('') + '</table>';
 }
 
-async function kbCreate() {
+function kbEdit(id) {
+  const e = kbCache.find(x => x.id === id);
+  if (!e) return;
+  editingKb = id;
+  document.getElementById('kbQ').value = e.question;
+  document.getElementById('kbA').value = e.answer;
+  document.getElementById('kbCat').value = e.category;
+  document.getElementById('kbKw').value = e.keywords || '';
+  document.getElementById('kbSaveBtn').textContent = '保存修改（' + id + '）';
+  window.scrollTo(0, 0);
+}
+
+function kbEditCancel() {
+  editingKb = null;
+  ['kbQ', 'kbA', 'kbCat', 'kbKw'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('kbSaveBtn').textContent = '新增';
+}
+
+async function kbSave() {
   const req = {
     question: document.getElementById('kbQ').value.trim(),
     answer: document.getElementById('kbA').value.trim(),
@@ -213,10 +258,39 @@ async function kbCreate() {
   };
   if (!req.question || !req.answer) return CS.toast('问题与答案必填', true);
   try {
-    await CS.post('/api/admin/kb', req);
-    CS.toast('FAQ 已新增');
-    ['kbQ', 'kbA', 'kbKw'].forEach(id => document.getElementById(id).value = '');
+    if (editingKb) {
+      await CS.put('/api/admin/kb/' + editingKb, req);
+      CS.toast('已保存（旧版已存为历史版本）');
+    } else {
+      await CS.post('/api/admin/kb', req);
+      CS.toast('FAQ 已新增');
+    }
+    kbEditCancel();
     loadKb();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function kbVersions(id) {
+  try {
+    const list = await CS.get('/api/admin/kb/' + id + '/versions');
+    document.getElementById('kbVerCard').style.display = '';
+    document.getElementById('kbVerId').textContent = id;
+    document.getElementById('kbVersions').innerHTML = list.length ?
+      '<table><tr><th>版本</th><th>保存时间</th><th>操作人</th><th>问题</th><th>答案摘要</th><th>操作</th></tr>' +
+      list.map(v => `<tr><td class="mono">#${v.id}</td><td class="muted">${CS.time(v.savedAt)}</td>
+        <td>${CS.esc(v.savedBy || '-')}</td><td>${CS.esc(v.question)}</td>
+        <td>${CS.esc((v.answer || '').slice(0, 60))}…</td>
+        <td><button class="small ghost" onclick="kbRollback('${id}',${v.id})">回滚到此版</button></td></tr>`).join('') + '</table>'
+      : '<div class="empty">暂无历史版本（编辑保存后自动生成）</div>';
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function kbRollback(id, revId) {
+  if (!confirm('确认回滚 ' + id + ' 到版本 #' + revId + '？当前内容会先存为新版本。')) return;
+  try {
+    await CS.post(`/api/admin/kb/${id}/rollback/${revId}`);
+    CS.toast('已回滚');
+    loadKb(); kbVersions(id);
   } catch (e) { CS.toast(e.message, true); }
 }
 
@@ -230,11 +304,12 @@ async function loadLlm() {
   const status = document.getElementById('llmStatus').value;
   const list = await CS.get('/api/admin/llm-calls?size=30' + (status ? '&status=' + status : ''));
   document.getElementById('llmList').innerHTML = list.length ?
-    '<table><tr><th>ID</th><th>会话</th><th>模型</th><th>Tokens</th><th>耗时</th><th>状态</th><th>时间</th></tr>' +
+    '<table><tr><th>ID</th><th>会话</th><th>模型</th><th>提示版本</th><th>Tokens</th><th>耗时</th><th>状态</th><th>时间</th></tr>' +
     list.map(c => `<tr><td class="mono">${c.id}</td><td class="mono">${CS.esc(c.sessionId || '-')}</td>
-      <td>${CS.esc(c.model || '-')}</td><td>${(c.promptTokens || 0) + (c.completionTokens || 0)}</td>
+      <td>${CS.esc(c.model || '-')}</td><td class="mono">${CS.esc(c.promptVersion || '-')}</td>
+      <td>${(c.promptTokens || 0) + (c.completionTokens || 0)}</td>
       <td>${c.latencyMs || 0}ms</td>
-      <td>${c.status === 'OK' ? '<span class="badge ok">OK</span>' : '<span class="badge err" title="' + CS.esc(c.error || '') + '">ERROR</span>'}</td>
+      <td>${c.status === 'OK' ? '<span class="badge ok">OK</span>' : '<span class="badge err" title="' + CS.esc(c.error || '') + '">' + CS.esc(c.status) + '</span>'}</td>
       <td class="muted">${CS.time(c.createdAt)}</td></tr>`).join('') + '</table>'
     : '<div class="empty">暂无调用记录（未配置 LLM Key 时为 FAQ 模式）</div>';
 }

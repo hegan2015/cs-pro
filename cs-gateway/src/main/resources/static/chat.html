@@ -42,13 +42,19 @@
 
   <!-- 会话区 -->
   <div id="chatArea" style="display:none">
+    <div id="takeoverBanner"></div>
     <div id="subBanner"></div>
     <div class="card">
       <div class="chat-box" id="chatBox"></div>
+      <div id="attachStrip" class="attach-strip" style="display:none"></div>
       <div class="row">
         <input id="input" placeholder="输入问题，如：打车怎么计价？ / 查一下我的订单 O1" style="flex:1"
                onkeydown="if(event.key==='Enter')send()">
+        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple
+               style="display:none" onchange="pickFiles(this)">
+        <button class="ghost" onclick="document.getElementById('fileInput').click()" title="附图片（≤3 张，每张 ≤5MB）">图片</button>
         <button id="sendBtn" onclick="send()">发送</button>
+        <button class="ghost" onclick="toHuman()">转人工</button>
         <button class="ghost" onclick="endSession()">结束会话</button>
       </div>
       <div class="muted" style="margin-top:6px">
@@ -70,6 +76,56 @@ let session = null;
 let es = null;
 let liveBubble = null;
 let sending = false;
+let pendingFiles = [];
+
+function pickFiles(input) {
+  for (const f of input.files) {
+    if (pendingFiles.length >= 3) { CS.toast('最多附 3 张图片', true); break; }
+    if (f.size > 5 * 1024 * 1024) { CS.toast(f.name + ' 超过 5MB', true); continue; }
+    pendingFiles.push(f);
+  }
+  input.value = '';
+  renderAttachStrip();
+}
+
+function renderAttachStrip() {
+  const strip = document.getElementById('attachStrip');
+  strip.style.display = pendingFiles.length ? '' : 'none';
+  strip.innerHTML = '';
+  pendingFiles.forEach((f, i) => {
+    const item = document.createElement('span');
+    item.className = 'attach-item';
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(f);
+    img.className = 'thumb';
+    const del = document.createElement('a');
+    del.href = 'javascript:void(0)';
+    del.textContent = '移除';
+    del.onclick = () => { pendingFiles.splice(i, 1); renderAttachStrip(); };
+    item.appendChild(img);
+    item.appendChild(del);
+    strip.appendChild(item);
+  });
+}
+
+async function uploadPending() {
+  const urls = [];
+  for (const f of pendingFiles) {
+    const fd = new FormData();
+    fd.append('file', f);
+    const resp = await fetch('/api/uploads', { method: 'POST', body: fd });
+    const body = await resp.json();
+    if (body.code !== '00000') throw new Error(body.message || '图片上传失败');
+    urls.push(body.data.url);
+  }
+  return urls;
+}
+
+function attachHtml(attachments) {
+  if (!attachments) return '';
+  return '<div class="attach-strip">' + attachments.split(',').map(u =>
+    `<a href="${CS.esc(u)}" target="_blank"><img class="thumb" src="${CS.esc(u)}"></a>`).join('') + '</div>';
+}
 
 function tenantFor(role) { return role === 'MERCHANT' ? 'payment-pro' : 'ride-pro'; }
 
@@ -92,6 +148,7 @@ function enterChat() {
   document.getElementById('subLink').href =
     `subscription.html?tenant=${session.tenantCode}&user=${encodeURIComponent(session.userId)}`;
   localStorage.setItem('cs-session', session.id);
+  if (session.accessToken) localStorage.setItem('cs-session-token', session.accessToken);
   document.getElementById('chatBox').innerHTML = '';
   refreshBanner();
   loadTickets();
@@ -106,7 +163,9 @@ function enterChat() {
 
 function connectSse() {
   if (es) es.close();
-  es = new EventSource('/api/sessions/' + session.id + '/stream');
+  const tok = session.accessToken || localStorage.getItem('cs-session-token');
+  es = new EventSource('/api/sessions/' + session.id + '/stream' +
+    (tok ? '?token=' + encodeURIComponent(tok) : ''));
   es.addEventListener('token', ev => {
     const d = JSON.parse(ev.data);
     if (!liveBubble) liveBubble = appendBotText('');
@@ -120,6 +179,10 @@ function connectSse() {
     tip.textContent = (d.ok ? '已调用工具 ' : '工具调用失败 ') + d.name;
     document.getElementById('chatBox').appendChild(tip);
     scrollBottom();
+  });
+  es.addEventListener('aborted', () => {
+    // 断流：服务端会保留已生成部分并随 message 落库，这里仅给气泡加中断标记
+    if (liveBubble) liveBubble.classList.add('aborted');
   });
   es.addEventListener('message', ev => {
     const m = JSON.parse(ev.data);
@@ -135,6 +198,12 @@ function connectSse() {
 
 async function refreshBanner() {
   try {
+    const s = await CS.get('/api/sessions/' + session.id);
+    session.takeover = s.takeover;
+    document.getElementById('takeoverBanner').innerHTML =
+      s.takeover ? '<div class="banner sub">人工客服服务中 · 您的问题将由客服优先回复</div>' : '';
+  } catch (e) { /* 非关键 */ }
+  try {
     const d = await CS.get(`/api/subscription/status?tenantCode=${session.tenantCode}&userId=${encodeURIComponent(session.userId)}`);
     const el = document.getElementById('subBanner');
     if (d.subscribed) {
@@ -147,11 +216,11 @@ async function refreshBanner() {
   } catch (e) { /*  banner 非关键 */ }
 }
 
-function appendUserText(text) {
+function appendUserText(text, attachments) {
   const box = document.getElementById('chatBox');
   const div = document.createElement('div');
   div.className = 'msg user';
-  div.innerHTML = `<div class="bubble">${CS.esc(text)}</div>`;
+  div.innerHTML = `<div class="bubble">${CS.esc(text)}${attachHtml(attachments)}</div>`;
   box.appendChild(div);
   scrollBottom();
 }
@@ -168,7 +237,7 @@ function appendBotText(text) {
 }
 
 function renderMessage(m) {
-  if (m.role === 'USER') { appendUserText(m.content); return; }
+  if (m.role === 'USER') { appendUserText(m.content, m.attachments); return; }
   if (document.getElementById('msg-' + m.id)) {
     // SSE 已渲染过流式内容：补齐元信息
     const exist = document.getElementById('msg-' + m.id);
@@ -204,6 +273,7 @@ function fillMeta(div, m) {
       card.className = 'draft-card';
       card.innerHTML = `<b>工单草稿</b>（${CS.esc(d.category)}）：${CS.esc(d.summary)}
         ${d.orderId ? ' · 订单 ' + CS.esc(d.orderId) : ''}
+        ${attachHtml(d.attachments)}
         <div style="margin-top:8px">
           <button class="small" onclick="confirmDraft('${m.id}', this)">确认创建工单</button>
           <span class="muted">确认前不会创建</span>
@@ -222,7 +292,8 @@ async function confirmDraft(msgId, btn) {
   try {
     const t = await CS.post('/api/tickets', {
       sessionId: session.id, category: d.category, summary: d.summary,
-      orderId: d.orderId || null, requestId: `TICKET-${session.id}-${msgId}`,
+      orderId: d.orderId || null, attachments: d.attachments || null,
+      requestId: `TICKET-${session.id}-${msgId}`,
     });
     card.innerHTML = `工单已创建：<span class="mono">${t.id}</span> ${CS.statusBadge(t.status)}`;
     CS.toast('工单创建成功 ' + t.id);
@@ -244,18 +315,27 @@ async function send() {
   if (sending) return;
   const input = document.getElementById('input');
   const content = input.value.trim();
-  if (!content) return;
-  input.value = '';
-  appendUserText(content);
+  if (!content && !pendingFiles.length) return;
   sending = true;
   document.getElementById('sendBtn').disabled = true;
   liveBubble = null;
   try {
-    const bot = await CS.post(`/api/sessions/${session.id}/messages`, { content });
+    const urls = await uploadPending();
+    const attachments = urls.length ? urls.join(',') : null;
+    input.value = '';
+    pendingFiles = [];
+    renderAttachStrip();
+    appendUserText(content || '[图片]', attachments);
+    const bot = await CS.post(`/api/sessions/${session.id}/messages`, { content, attachments });
     liveBubble = null;
-    renderMessage(bot);
-    scrollBottom();
-    refreshBanner();
+    if (!bot) {
+      appendBotText('已转人工，您的消息已进入客服队列，请等待客服回复。');
+      refreshBanner();
+    } else {
+      renderMessage(bot);
+      scrollBottom();
+      refreshBanner();
+    }
   } catch (e) {
     liveBubble = null;
     appendBotText('' + e.message);
@@ -265,6 +345,16 @@ async function send() {
     document.getElementById('sendBtn').disabled = false;
     document.getElementById('input').focus();
   }
+}
+
+async function toHuman() {
+  if (!session) return;
+  try {
+    const s = await CS.post(`/api/sessions/${session.id}/human`);
+    session.takeover = s.takeover;
+    refreshBanner();
+    CS.toast('已转接人工客服');
+  } catch (e) { CS.toast(e.message, true); }
 }
 
 function ask(text) {
@@ -278,6 +368,7 @@ async function endSession() {
     if (es) es.close();
     CS.toast('会话已结束');
     localStorage.removeItem('cs-session');
+    localStorage.removeItem('cs-session-token');
     session = null;
     document.getElementById('chatArea').style.display = 'none';
     document.getElementById('setupCard').style.display = '';

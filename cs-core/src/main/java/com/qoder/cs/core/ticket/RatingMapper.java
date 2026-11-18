@@ -21,4 +21,8 @@ public interface RatingMapper {
 
     @Select("SELECT COUNT(*) FROM cs_rating WHERE target_type = #{targetType} AND score <= 2")
     long lowCountByType(@Param("targetType") String targetType);
+
+    @Select("SELECT COUNT(*) FROM cs_rating r JOIN cs_message m ON r.target_id = m.id " +
+            "WHERE r.target_type = 'MESSAGE' AND m.session_id = #{sessionId} AND r.score <= 2")
+    long lowMessageCountBySession(@Param("sessionId") String sessionId);
 }

@@ -9,8 +9,6 @@ import java.util.List;
 @Mapper
 public interface TenantMapper {
 
-    @Select("SELECT NEXT VALUE FOR seq_tenant")
-    long nextId();
 
     @Select("SELECT * FROM cs_tenant ORDER BY id")
     List<TenantDTO> selectAll();
@@ -35,8 +33,10 @@ public interface TenantMapper {
     @Select("SELECT * FROM cs_subscription")
     List<SubscriptionDTO> selectAllSubscriptions();
 
-    @Update("MERGE INTO cs_subscription(tenant_id, plan_name, days, status, start_at, expire_at, source, updated_at) " +
-            "KEY(tenant_id) VALUES(#{tenantId}, #{planName}, #{days}, #{status}, #{startAt}, #{expireAt}, #{source}, #{updatedAt})")
+    @Update("INSERT INTO cs_subscription(tenant_id, plan_name, plan_code, days, status, start_at, expire_at, source, updated_at) " +
+            "VALUES(#{tenantId}, #{planName}, #{planCode}, #{days}, #{status}, #{startAt}, #{expireAt}, #{source}, #{updatedAt}) " +
+            "ON DUPLICATE KEY UPDATE plan_name = VALUES(plan_name), plan_code = VALUES(plan_code), days = VALUES(days), status = VALUES(status), " +
+            "start_at = VALUES(start_at), expire_at = VALUES(expire_at), source = VALUES(source), updated_at = VALUES(updated_at)")
     int upsertSubscription(SubscriptionDTO sub);
 
     @Update("UPDATE cs_subscription SET status = 'EXPIRED' WHERE status = 'ACTIVE' AND expire_at <= #{now}")
