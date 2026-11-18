@@ -25,6 +25,7 @@ public class HealthService {
     private final MqBridge mq;
     private final CsProperties props;
     private final Environment env;
+    private final com.qoder.cs.kb.vector.VectorIndex vector;
 
     public Map<String, Object> detail() {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -40,6 +41,9 @@ public class HealthService {
         upstream.put("paymentPro", pp.enabled());
         out.put("upstream", upstream);
         out.put("proactive", Map.of("enabled", props.getProactive().isEnabled()));
+        var vs = vector.status();
+        out.put("vector", Map.of("enabled", vs.enabled(), "embeddingUp", vs.embeddingUp(),
+                "qdrantUp", vs.qdrantUp(), "indexed", vs.indexed()));
         return out;
     }
 }

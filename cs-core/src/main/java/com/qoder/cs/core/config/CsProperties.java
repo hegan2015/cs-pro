@@ -75,6 +75,8 @@ public class CsProperties {
     public static class Kb {
         /** FAQ 直答的 BM25 最低分阈值 */
         private double directThreshold = 1.0;
+        /** FAQ 直答的向量 cosine 最低分阈值（int8 bge-small-zh 实测：同主题改写 0.66~0.81，跨主题 ≤0.50） */
+        private double vectorDirectThreshold = 0.65;
         private int ragTopK = 3;
     }
 

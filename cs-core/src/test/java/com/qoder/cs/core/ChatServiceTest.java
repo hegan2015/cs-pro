@@ -3,17 +3,24 @@ package com.qoder.cs.core;
 import com.qoder.cs.common.exception.BizException;
 import com.qoder.cs.core.chat.ChatService;
 import com.qoder.cs.core.subscription.SubscriptionService;
+import com.qoder.cs.facade.dto.KbEntryDTO;
 import com.qoder.cs.facade.dto.MessageDTO;
 import com.qoder.cs.facade.dto.SessionDTO;
 import com.qoder.cs.facade.dto.TenantDTO;
 import com.qoder.cs.facade.request.SessionCreateRequest;
+import com.qoder.cs.kb.vector.VectorIndex;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 /** 无 LLM Key 环境：未订阅 FAQ 限次、订阅后 FAQ 降级不限次、会话生命周期。 */
 @SpringBootTest(classes = TestApp.class)
@@ -23,6 +30,8 @@ class ChatServiceTest {
     ChatService chat;
     @Autowired
     SubscriptionService subscriptions;
+    @MockBean
+    VectorIndex vector;
 
     private SessionDTO newSession(String userId) {
         SessionCreateRequest req = new SessionCreateRequest();
@@ -40,6 +49,30 @@ class ChatServiceTest {
         assertTrue(bot.getContent().contains("起步价"));
         assertNotNull(bot.getKbRefs());
         assertEquals("计价", chat.getSession(s.getId()).getIntent());
+    }
+
+    @Test
+    void vectorOnlyHitTriggersDirectAnswer() {
+        KbEntryDTO fare = kb.list().stream()
+                .filter(e -> e.getQuestion().contains("计价")).findFirst().orElseThrow();
+        when(vector.search(anyString(), anyInt()))
+                .thenReturn(List.of(new VectorIndex.VectorHit(fare.getId(), 0.93)));
+        SessionDTO s = newSession("UT-VEC-" + UUID.randomUUID().toString().substring(0, 8));
+        // BM25 零命中的问法，仅向量高分命中也应直答
+        MessageDTO bot = chat.sendMessage(s.getId(), "驫龘齾爨");
+        assertTrue(bot.getContent().contains("起步价"));
+        assertEquals(fare.getId(), bot.getKbRefs());
+    }
+
+    @Test
+    void lowVectorScoreDoesNotTriggerDirectAnswer() {
+        KbEntryDTO fare = kb.list().stream()
+                .filter(e -> e.getQuestion().contains("计价")).findFirst().orElseThrow();
+        when(vector.search(anyString(), anyInt()))
+                .thenReturn(List.of(new VectorIndex.VectorHit(fare.getId(), 0.50)));
+        SessionDTO s = newSession("UT-VEC-" + UUID.randomUUID().toString().substring(0, 8));
+        MessageDTO bot = chat.sendMessage(s.getId(), "驫龘齾爨龘");
+        assertTrue(bot.getContent().contains("暂未找到匹配答案"));
     }
 
     @Test
@@ -300,7 +333,9 @@ class ChatServiceTest {
         req.setTenantCode(tenant.getCode());
         SessionDTO s = chat.createSession(req);
         chat.sendMessage(s.getId(), "打车怎么计价？"); // 无 LLM Key → FALLBACK 降级
-        var item = chat.badcases(50).stream()
+        @SuppressWarnings("unchecked")
+        var badItems = (java.util.List<java.util.Map<String, Object>>) chat.badcases(1, 50).get("list");
+        var item = badItems.stream()
                 .filter(b -> s.getId().equals(((SessionDTO) b.get("session")).getId()))
                 .findFirst().orElseThrow();
         @SuppressWarnings("unchecked")

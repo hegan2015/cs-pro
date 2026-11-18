@@ -75,4 +75,15 @@ const CS = {
   },
 
   qs(name) { return new URLSearchParams(location.search).get(name); },
+
+  pager(id, total, page, size, fn) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const pages = Math.max(1, Math.ceil(total / size));
+    el.innerHTML = `<div class="pager">
+      <button class="small ghost" ${page <= 1 ? 'disabled' : ''} onclick="${fn}(${page - 1})">上一页</button>
+      <span class="muted">第 ${page} / ${pages} 页 · 共 ${total} 条</span>
+      <button class="small ghost" ${page >= pages ? 'disabled' : ''} onclick="${fn}(${page + 1})">下一页</button>
+    </div>`;
+  },
 };

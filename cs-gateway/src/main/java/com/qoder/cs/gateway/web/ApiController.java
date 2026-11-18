@@ -146,6 +146,7 @@ public class ApiController {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("entry", h.entry());
             row.put("score", Math.round(h.score() * 100) / 100.0);
+            row.put("vectorScore", Math.round(h.vectorScore() * 1000) / 1000.0);
             out.add(row);
         }
         return Result.ok(out);

@@ -164,3 +164,59 @@ python3 llm-eval.py                      # 17 项（需 LLM Key + ride-pro 在�
 - 开放 API 只读三端点，未做 rate-limit 与 secret 签名（secret 已生成预留，HMAC 签名是下一步）。
 - CI 仅构建 + 单测 + 工件，未接部署流水线。
 - 向量检索/分词器升级、WebSocket、统一登录：沿用 v1.1 边界。
+
+## 16. 交付后增补（2026-11-18 同日）
+
+### 16.1 管理端分页补齐（用户指令「给我检查一下分页 包括邀请码，审计等等」）
+
+排查结论：后端仅 sessions/tickets/audit-log 有真分页；codes/tenants/subscriptions/sub-orders/open-keys/invoices 全量返回；llm-calls 有 offset 但无 total；badcases/proactive-events 仅 limit；**前端零分页控件**（激活码 `slice(0,20)`、订阅单 `slice(0,10)` 假分页），F 批新域（审计日志/开放凭证/账单/坏例/主动事件）只有后端没有 UI。
+
+修复：
+- **后端契约统一**：9 个列表端点改 `{total, list}` + `page/size`（默认 1/20，上限 100；badcases 上限 50）——codes/llm-calls/sub-orders/open-keys/invoices/tenants/subscriptions/badcases/proactive-events。Mapper 补 count + LIMIT/OFFSET 分页查询（H2/MySQL 双方言兼容）；`/kb` 保持运营全量视图（条目量小）。
+- **前端**：common.js 新增 `CS.pager`（上一页/下一页 + 第 x/y 页·共 N 条）；admin.html 扩为 **7 页签**（新增「审计与坏例」：管理审计 action 过滤 + 坏例上下文 + 主动事件；「开放与账单」：open-key 生成/吊销 + 月度出账/查询），全部列表接真分页、去 slice；LLM 状态过滤补全 6 态（OK/ERROR/FALLBACK/BUDGET/ABORTED/CIRCUIT）；agent.html 工单池 + 坏例队列接分页。
+- **同批适配**：smoke-test.py llm-calls 裸 list 断言改 {total,list}，新增 §12b 分页契约 9 端点 + 激活码翻页不重复断言（62→**86 项**）；ChatServiceTest badcases 适配新签名。
+
+### 16.2 默认库切 Docker MySQL（用户拍板「h2改为mysql，docker里的」）
+
+run.sh 默认 `CS_DB_MODE` 由 h2 改 **mysql**（直连 claim-shared 共享栈），启动前自检 3306 可达、不可达报错并给出 compose 启动命令；`CS_DB_MODE=h2` 保留零依赖回退。取代 §二.8 原「默认 H2 保留」决策。README/DESIGN/COLLABORATION 已同步。
+
+### 16.3 增补验证
+
+- 单测 **48/48**；冒烟 **86/86 × 双实例**（8096/8099，mysql+mq，默认模式重启）。
+- 浏览器隐藏 iframe 实测（不劫持用户页签，测后清理）：激活码 **137 条 14 页**翻页无重复、订阅 37 条 4 页、LLM 审计 281 条 15 页 + FALLBACK 过滤 9 条、会话 98 条翻页、管理审计 61 条 + KB_UPDATE 过滤 4 条、坏例 8 条、主动事件 42 条 3 页、凭证 2 条、账单 1 条、工作台工单 20 条 2 页翻页内容变化——全过。
+
+## 17. 向量混合检索（2026-11-18 用户拍板「引入向量库」）
+
+用户拍板：**Qdrant 单容器**（AskUserQuestion 推荐项）；追问「本地 onnx 能放到 docker 里吗」→ 独立轻量 embedding 容器（模型烘进镜像，双 cs 实例共享）。BM25 仍是零依赖底座，向量为旁路增强，容器不可达自动降级纯 BM25。
+
+### 17.1 V1 容器基建（claim-shared 共享栈追加）
+
+- `deploy/vector-compose.yml`（compose 项目名 **claim-shared**，与中间件栈同栈，**勿 --remove-orphans**）：
+  - **claim-shared-qdrant**：qdrant v1.12.4，127.0.0.1:6333，卷 claim-shared-qdrant。
+  - **claim-shared-cs-embedding**：`deploy/embedding/`（python:3.11-slim + FastAPI + ONNX Runtime + tokenizers），127.0.0.1:8100；模型 **bge-small-zh-v1.5 int8**（512 维，CLS pooling + L2 归一化），`COPY model/` 烘进镜像；`POST /embed {texts}→{vectors}`、`GET /health`。
+- 模型下载：`deploy/embedding/download-model.sh`（**ModelScope 国内 CDN ~15-20MB/s**，Xenova/bge-small-zh-v1.5 镜像仓库含 onnx/，fp32/fp16/int8 变体可选，默认 int8 24MB；curl -C - 续传）。模型文件 gitignored（`deploy/embedding/model/`）。
+- 启动：`docker compose -f deploy/vector-compose.yml up -d --build`（docker 需 `export PATH="$HOME/.docker/bin:$PATH"`）。
+
+### 17.2 V2 Java 混合检索（cs-kb）
+
+- **VectorIndex**（`cs-kb/.../kb/vector/VectorIndex.java`）：JDK HttpClient + Jackson 直连 Qdrant/embedding，无 SDK 依赖。search/syncEntry/removeEntry/reindex/status；collection `cs_kb`（Cosine，512 维），point id = kbId 的 name-based UUID（增改幂等 upsert）。
+- **降级**：任何失败→返空（调用方走 BM25 旧路）+ 熔断 30s + WARN；status 探针 10s 缓存；collection 404 视为 Qdrant 可达未建集（首启）。启动 autoBackfill 守护线程：容器在跑且点数≠启用条目数→后台全量重建。
+- **RRF 融合**（KbService.search）：BM25/向量各取 max(limit×3,10)，`rrfFuse` k=60（`cs.vector.rrf-k`）；`Hit(entry, score, vectorScore)` 双分数保留，`/api/kb/search` 输出 vectorScore。
+- **直答双阈值**（ChatService）：BM25≥1.0 **或** cosine≥**0.65**（`cs.kb.vector-direct-threshold`）。0.65 为 int8 模型实测校准：同问 0.96 / 同主题改写 0.665~0.81 / 跨主题≤0.50 / 弱相关 0.72 / 无关 0.30，安全边际 0.15。BGE 官方查询指令前缀实测反而降分，弃用。
+- KB 增删改/回滚同步向量（禁用即移除）；管理端 `POST /api/admin/kb/reindex`（审计 KB_REINDEX，失败报业务错）+ `GET /api/admin/kb/vector-status`；admin.html KB 页签向量卡片（状态+一键重建）、health.html 向量行；`CS_VECTOR_ENABLED=false` 整体关闭；run.sh 加 Qdrant 6333 非阻塞自检提示。
+
+### 17.3 V3 全量验证（2026-11-18）
+
+- 单测 **55/55**（cs-kb 12 含 rrfFuse/pointId/docText 新 5、cs-core 41 含向量直答双阈值新 2、cs-llm 2）。
+- 冒烟 **92/92 × 双实例**（8096/8099，mysql+mq；§12c 新增 6 断言：vector-status 契约、health 含 vector、重建数==启用条目数 21）。
+- **降级实测**：停容器→检索纯 BM25 兜底、reindex 报业务错不崩、WARN 熔断日志、恢复后自动回绿。
+- **端到端语义直答**：「退钱什么时候能到」→K7（退款）、「乘坐网约车的费用如何核算」→K1（计价，BM25 零字面重合，纯向量命中直答）。
+- **浏览器隐藏 iframe 实测**（测后清理）：admin 向量卡片「混合检索生效 · 已索引 21/21 · bge-small-zh-v1.5 · 512 维」、重建按钮 toast「21 条」、health 行「Qdrant 在线 · Embedding 在线 · 已索引 21」。
+
+### 17.4 踩坑记录
+
+- **pip 清华源容器内 403** → Dockerfile 换阿里云源（mirrors.aliyun.com）。
+- **hf-mirror tokenizer.json 容器内 403**（xet 桥小文件），大文件宿主 3.8KB/s、容器 32KB/s → **ModelScope 终极方案**（19.7MB/s 秒下 int8 24MB），宿主预下载 + COPY，Dockerfile 回退下载源同步改 ModelScope。
+- **「向量不生效」疑案**：公开检索看不到 vectorScore + 排序似 BM25 → 排查（日志零 WARN、反编译确认字节码、jshell 隔离验证 rrfFuse）后真相：**BM25 同分（2.86）平局序跨 JVM 不一致**（HashMap 遍历序），本 JVM 榜单与另一实例不同导致 Python 复算误判；RRF 融合从未有 bug。ApiController 补 vectorScore 输出后可直接观测。多实例间 BM25 同分排序微差是既有行为，非向量缺陷。
+- 首次启动 collection 不存在被误判 Qdrant 离线 → status() 单独 catch 404 → qUp=true indexed=0。
+- ConnectException.getMessage()=null 致降级错误信息空 → trip/reindex 错误串改 e.toString()。

@@ -92,8 +92,12 @@ public class SubscriptionPayService {
         return order;
     }
 
-    public List<SubOrderDTO> list() {
-        return orderMapper.selectAll();
+    public Map<String, Object> list(int page, int size) {
+        int limit = Math.min(size, 100);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total", orderMapper.countAll());
+        out.put("list", orderMapper.page((page - 1) * limit, limit));
+        return out;
     }
 
     @Scheduled(fixedDelay = 5000)

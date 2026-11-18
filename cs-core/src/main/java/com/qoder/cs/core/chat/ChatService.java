@@ -168,9 +168,10 @@ public class ChatService {
     }
 
     /** 坏例队列：差评/降级会话 + 原因 + 最近问答摘要与引用条目，供知识运营改进 KB。 */
-    public List<Map<String, Object>> badcases(int limit) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (SessionDTO s : sessionMapper.badcases(Math.min(limit, 50))) {
+    public Map<String, Object> badcases(int page, int size) {
+        int limit = Math.min(size, 50);
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (SessionDTO s : sessionMapper.badcases((page - 1) * limit, limit)) {
             Map<String, Object> item = new java.util.LinkedHashMap<>();
             item.put("session", s);
             List<String> reasons = new ArrayList<>();
@@ -202,8 +203,11 @@ public class ChatService {
             item.put("lastUser", lastUser);
             item.put("lastBot", lastBot == null ? null : abbreviate(lastBot, 200));
             item.put("kbRefs", refs);
-            out.add(item);
+            items.add(item);
         }
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("total", sessionMapper.badcasesCount());
+        out.put("list", items);
         return out;
     }
 
@@ -688,7 +692,8 @@ public class ChatService {
         List<KbService.Hit> hits = kb.search(content, props.getKb().getRagTopK());
         String answer;
         String refs = null;
-        if (!hits.isEmpty() && hits.get(0).score() >= props.getKb().getDirectThreshold()) {
+        if (!hits.isEmpty() && (hits.get(0).score() >= props.getKb().getDirectThreshold()
+                || hits.get(0).vectorScore() >= props.getKb().getVectorDirectThreshold())) {
             KbService.Hit best = hits.get(0);
             answer = best.entry().getAnswer();
             refs = best.entry().getId();

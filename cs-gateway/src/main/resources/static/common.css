@@ -120,3 +120,5 @@ tr:hover td { background: #fafaff; }
   width: 72px; height: 72px; object-fit: cover; border-radius: 6px;
   border: 1px solid var(--border); display: block;
 }
+.pager { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+.pager button:disabled { opacity: .4; cursor: default; }

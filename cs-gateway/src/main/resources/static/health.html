@@ -45,6 +45,12 @@ async function refresh() {
     rows.push(['ride-pro', badge(d.upstream.ridePro, d.upstream.ridePro ? '在线' : '离线'), '打车查询上游']);
     rows.push(['payment-pro', badge(d.upstream.paymentPro, d.upstream.paymentPro ? '已接入' : '未接入'), '支付查询上游']);
     rows.push(['主动服务', badge(d.proactive.enabled, d.proactive.enabled ? '开启' : '关闭'), '异常事件轮询推送']);
+    if (d.vector) {
+      const v = d.vector;
+      const vOk = !v.enabled || (v.embeddingUp && v.qdrantUp);
+      rows.push(['向量检索', badge(vOk, !v.enabled ? '已关闭' : (vOk ? '混合检索' : '降级 BM25')),
+        v.enabled ? `Qdrant ${v.qdrantUp ? '在线' : '离线'} · Embedding ${v.embeddingUp ? '在线' : '离线'} · 已索引 ${v.indexed}` : '仅 BM25']);
+    }
     document.getElementById('components').innerHTML =
       '<table><tr><th>组件</th><th>状态</th><th>说明</th></tr>' +
       rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td class="muted">${r[2]}</td></tr>`).join('') + '</table>';

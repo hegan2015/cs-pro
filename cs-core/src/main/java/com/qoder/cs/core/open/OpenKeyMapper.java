@@ -15,11 +15,14 @@ public interface OpenKeyMapper {
     @Select("SELECT * FROM cs_open_key WHERE api_key = #{apiKey}")
     OpenKeyDTO selectByKey(@Param("apiKey") String apiKey);
 
-    @Select("SELECT * FROM cs_open_key WHERE tenant_id = #{tenantId} ORDER BY created_at DESC")
-    List<OpenKeyDTO> listByTenant(@Param("tenantId") String tenantId);
+    @Select("<script>SELECT COUNT(*) FROM cs_open_key " +
+            "<if test='tenantId != null'>WHERE tenant_id = #{tenantId}</if></script>")
+    long count(@Param("tenantId") String tenantId);
 
-    @Select("SELECT * FROM cs_open_key ORDER BY created_at DESC")
-    List<OpenKeyDTO> listAll();
+    @Select("<script>SELECT * FROM cs_open_key " +
+            "<if test='tenantId != null'>WHERE tenant_id = #{tenantId}</if> " +
+            "ORDER BY created_at DESC, api_key LIMIT #{size} OFFSET #{offset}</script>")
+    List<OpenKeyDTO> page(@Param("tenantId") String tenantId, @Param("offset") int offset, @Param("size") int size);
 
     @Update("UPDATE cs_open_key SET status = 'REVOKED' WHERE api_key = #{apiKey} AND status = 'ACTIVE'")
     int revoke(@Param("apiKey") String apiKey);

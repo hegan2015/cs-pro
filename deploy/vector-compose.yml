@@ -1,0 +1,31 @@
+# cs-pro 向量检索栈：Qdrant + 本地 ONNX Embedding（bge-small-zh-v1.5）
+# 并入 claim-shared 共享项目（与 ops-pro/deploy/middleware-compose.yml 同项目名，网络/卷互通）。
+# 启动：docker compose -f deploy/vector-compose.yml up -d --build
+# 只管理本文件内的服务，不影响共享栈其余容器；勿加 --remove-orphans。
+name: claim-shared
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: claim-shared-qdrant
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - claim-shared-qdrant:/qdrant/storage
+    restart: unless-stopped
+
+  cs-embedding:
+    build: ./embedding
+    image: cs-embedding:1.0.0
+    container_name: claim-shared-cs-embedding
+    ports:
+      - "127.0.0.1:8100:8100"
+    restart: unless-stopped
+
+networks:
+  default:
+    name: claim-shared_default
+
+volumes:
+  claim-shared-qdrant:
+    name: claim-shared-qdrant

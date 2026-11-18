@@ -44,6 +44,14 @@ cs:
   kb:
     # TopK 检索结果缓存 TTL（毫秒，0=关闭）；KB 变更即时失效
     cache-ttl-ms: ${CS_KB_CACHE_TTL_MS:30000}
+  vector:
+    # 混合检索（BM25+向量 RRF）；容器不可达自动降级纯 BM25
+    enabled: ${CS_VECTOR_ENABLED:true}
+    qdrant-url: ${CS_QDRANT_URL:http://127.0.0.1:6333}
+    embedding-url: ${CS_EMBEDDING_URL:http://127.0.0.1:8100}
+    collection: cs_kb
+    rrf-k: 60
+    timeout-ms: 3000
   uploads:
     dir: ${DATA_DIR:./data}/uploads
   proactive:

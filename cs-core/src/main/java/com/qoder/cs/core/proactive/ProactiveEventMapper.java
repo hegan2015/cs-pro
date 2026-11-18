@@ -16,6 +16,9 @@ public interface ProactiveEventMapper {
     @Update("UPDATE cs_proactive_event SET session_id = #{sessionId} WHERE event_key = #{eventKey}")
     int updateSession(@Param("eventKey") String eventKey, @Param("sessionId") String sessionId);
 
-    @Select("SELECT * FROM cs_proactive_event ORDER BY created_at DESC LIMIT #{limit}")
-    List<ProactiveEventDTO> recent(@Param("limit") int limit);
+    @Select("SELECT COUNT(*) FROM cs_proactive_event")
+    long count();
+
+    @Select("SELECT * FROM cs_proactive_event ORDER BY created_at DESC, event_key LIMIT #{limit} OFFSET #{offset}")
+    List<ProactiveEventDTO> page(@Param("offset") int offset, @Param("limit") int limit);
 }

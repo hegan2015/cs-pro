@@ -16,7 +16,7 @@
 | 机器人自动问答 | 接入 LLM API，结合 FAQ 知识库 + 业务数据（RAG / Function Calling）回答用户问题 |
 | 业务查询 | 对话中直接查询 ride-pro 订单/钱包/流水、payment-pro 交易/账户状态，只读不写 |
 | 工单与统计 | 机器人解决不了的问题生成工单，支持处理流转；会话/工单/满意度/问题分类统计报表 |
-| 与现有系统同风格 | Java 17 + Spring Boot 3.2 + Maven，`./run.sh` 一键启动；**默认 H2 零依赖**，商用模式可选 MySQL + RocketMQ（Docker 共享栈，v1.2.0 用户拍板） |
+| 与现有系统同风格 | Java 17 + Spring Boot 3.2 + Maven，`./run.sh` 一键启动；**默认 Docker MySQL**（2026-11-18 用户拍板），`CS_DB_MODE=h2` 保留零依赖形态；RocketMQ 可选（Docker 共享栈，v1.2.0 用户拍板） |
 
 ### 1.2 范围内 / 范围外
 
@@ -27,7 +27,7 @@
 
 | 约束 | 落地方式 |
 |---|---|
-| 默认零外部部署依赖 | H2 文件库 + 内嵌静态页；LLM 是唯一外部调用（见 §5 降级策略）。商用模式（MySQL+RocketMQ）可选启用，MQ 不可用自动降级直写 |
+| 默认 Docker MySQL | 共享栈 MySQL（与保险系统公用）+ 内嵌静态页；run.sh 启动前自检 3306 可达；`CS_DB_MODE=h2` 切回零依赖 H2。LLM 是唯一外部调用（见 §5 降级策略）。RocketMQ 可选启用，MQ 不可用自动降级直写 |
 | 可直接运行 | `./run.sh` 编译 + 启动 + 就绪等待；`./stop.sh` 优雅停止 |
 | 数据保护 | `data/` 只增不删；停服务不触碰数据；迁移工具对 H2 只读；对 ride/payment 两系统**零写入、零 schema 改动** |
 | 资金安全边界 | 客服系统对业务系统默认只读；**唯一例外**：订阅购买经用户批准调用 payment-pro `trade.create/trade.pay`（§3A.5），其余资金动作（退款/充值）不由客服发起 |
@@ -39,10 +39,10 @@
 |---|---|---|
 | 架构形态 | **单进程 Spring Boot + REST 集成** | 内部模块化，不引入 Dubbo/ZK |
 | LLM 接入 | **OpenAI 兼容协议统一客户端** | JDK HttpClient 实现；具体供应商与 Key 实现前再定 |
-| 知识库检索 | **本地 BM25 倒排（零依赖）** | 中文 n-gram 分词，进程内索引 |
+| 知识库检索 | **BM25 + 向量混合（2026-11-18 追加拍板）** | BM25 中文 n-gram 进程内索引（零依赖底座）+ Qdrant 向量（本地 ONNX embedding 容器），RRF 融合；容器不可达降级纯 BM25，见 §3.3 |
 | payment-pro 查询通道 | **8443 OpenAPI HMAC 验签** | 注册客服专属商户，HTTPS + 自签证书信任，见 §2.5 |
 | 实时推送 | SSE 单向流（默认建议） | 对话场景只需服务端→客户端流；多实例经 RocketMQ 广播（v1.2.0） |
-| 存储 | **双模（v1.2.0 用户拍板）**：默认 H2 单文件库；商用 MySQL 8 | SQL 按 MySQL 方言编写；`CS_DB_MODE=mysql` 切换，db/schema-mysql.sql 幂等建表 |
+| 存储 | **双模（v1.2.0 用户拍板）**：默认 Docker MySQL 8（2026-11-18 追加拍板）；`CS_DB_MODE=h2` 切 H2 单文件库 | SQL 按 MySQL 方言编写，db/schema-mysql.sql 幂等建表；H2 侧 MODE=MySQL 兼容 |
 | 消息 | **可选 RocketMQ 5（v1.2.0 用户拍板）** | 与保险理赔系统公用 Docker 栈（ops-pro/deploy/middleware-compose.yml）；`CS_MQ_ENABLED=true` 启用，失败降级直写 |
 
 ### 1.5 订阅模型决议（2026-11-17 用户确认）
@@ -60,7 +60,7 @@
 
 ### 2.1 形态选择：独立轻量进程 + REST 集成（推荐）
 
-不复制 ride/payment 的 Dubbo 多进程拓扑——客服是聚合查询 + 对话场景，无跨域事务需求，单进程足够且运维成本最低。v1.2.0 起支持**同库多实例**水平部署（8096+8099 实测），跨实例 SSE 经 RocketMQ 广播；默认仍是单进程 H2 零依赖形态。
+不复制 ride/payment 的 Dubbo 多进程拓扑——客服是聚合查询 + 对话场景，无跨域事务需求，单进程足够且运维成本最低。v1.2.0 起支持**同库多实例**水平部署（8096+8099 实测），跨实例 SSE 经 RocketMQ 广播；默认单进程 Docker MySQL，`CS_DB_MODE=h2` 保留零依赖形态。
 
 ```
  用户咨询 H5 ──HTTP/SSE──┐
@@ -81,7 +81,7 @@
                           │  │ FAQ+检索    │ │ 查询适配器  │ │
                           │  └────────────┘ └─────┬──────┘ │
                           └───────────────────────┼────────┘
-                     H2 cs.mv.db（默认）⇄ MySQL cs_pro（商用 profile，Docker 共享栈）
+                     MySQL cs_pro（默认，Docker 共享栈）⇄ H2 cs.mv.db（CS_DB_MODE=h2 零依赖）
                      RocketMQ（可选 mq profile）：cs_sse_event 跨实例广播 / cs_llm_audit 审计异步
                                                   │ 只读
                         ┌─────────────────────────┼──────────────────┐
@@ -119,9 +119,9 @@ cs-pro (parent, pom)
 | 项 | 端口 | 说明 |
 |---|---|---|
 | cs-gateway HTTP | **8096**（第二实例 8099） | REST + SSE + H5 |
-| H2 | 无端口 | 文件库 `data/cs.mv.db`（默认模式） |
-| MySQL（商用） | 3306 | Docker 共享栈 claim-shared-mysql，库 cs_pro |
-| RocketMQ（商用） | 9876 | Docker 共享栈 namesrv（broker 10911/10909） |
+| H2 | 无端口 | 文件库 `data/cs.mv.db`（`CS_DB_MODE=h2` 零依赖模式） |
+| MySQL（默认） | 3306 | Docker 共享栈 claim-shared-mysql，库 cs_pro |
+| RocketMQ（可选） | 9876 | Docker 共享栈 namesrv（broker 10911/10909） |
 | LLM | 出站 443 | 外部 API |
 
 环境变量可覆盖：`CS_PORT`、`DATA_DIR`、`ADMIN_TOKEN`（逗号分隔多令牌轮换）、`CS_DB_MODE`、`CS_MQ_ENABLED`、`CS_MYSQL_URL/USER/PASSWORD`、`CS_MQ_NAMESERVER`。与现有系统端口段（8080/8090/8092/8093/8095/8097/8098/8443/2181/2182/2088x/2090x/9101）无冲突。
@@ -191,13 +191,15 @@ cs-pro (parent, pom)
 2. 工具白名单硬编码，LLM 无法调用未注册工具；无写工具。
 3. 工具结果脱敏后进 prompt（手机号掩码、卡号前 6 后 4），与两系统脱敏口径一致。
 
-### 3.3 知识库 RAG（轻量方案）
+### 3.3 知识库 RAG（BM25 + 向量混合检索）
 
-演示规模 FAQ（几十~几百条）不引入向量库：
+2026-11-18 用户拍板引入向量库：**Qdrant 单容器**（共享栈 claim-shared，6333）+ **本地 ONNX Embedding 容器**（cs-embedding，8100）。BM25 仍是零依赖底座，向量是旁路增强。
 - **检索**：中文按字/词 n-gram 倒排 + BM25 打分（纯 Java 实现，进程内索引，KB 变更即重建）+ **12 组同义词扩展**（查询侧扩词，词频取 max）；取 Top3 片段注入 system prompt，**30s TTL 缓存**（`cs.kb.cache-ttl-ms`，变更即失效）。
+- **向量通道**：embedding 模型 bge-small-zh-v1.5 int8（512 维，CLS pooling + L2 归一化，模型烘进镜像，双 cs 实例共享）；Qdrant collection `cs_kb`（Cosine），point id = kbId 的 name-based UUID；KB 增删改同步向量（禁用即移除），启动时点数≠启用条目数自动后台补建。
+- **融合与直答**：BM25/向量各取 max(limit×3,10)，**RRF 融合**（k=60，`cs.vector.rrf-k`）；FAQ 直答双阈值：BM25≥directThreshold(1.0) **或** cosine≥vectorDirectThreshold(0.65)。0.65 为 int8 模型实测校准值（同问 0.96、同主题改写 0.66~0.81、跨主题≤0.50，安全边际 0.15）；BGE 官方查询指令前缀实测反而降分，弃用。
+- **降级**：任一容器不可达→纯 BM25（旧路），失败熔断 30s（downUntil）+ WARN；status 探针 10s 缓存；`CS_VECTOR_ENABLED=false` 整体关闭。管理台向量状态卡片 + 一键重建（`POST /api/admin/kb/reindex`，失败报业务错不崩）。
 - **查询改写**：当前句 + 上一轮用户问题做轻量指代消解（0 次额外 LLM 调用）。
 - **知识运营闭环（v1.2.0）**：每次改写前旧版快照入 `cs_kb_revision`，支持版本列表与一键回滚；差评/降级会话自动入**坏例队列**（原因+问答摘要+引用条目）；**引用解决率**（cited_count / cited_resolved_count）度量每条 FAQ 的实际解决效果。
-- **演进**：放开约束后可换 embedding + 向量检索（§11）。
 - KB 条目含：question / answer / category（计价/支付/退款/提现/账号/投诉…）/ keywords / enabled。管理端可增删改，种子数据从两系统 README 的业务规则提炼；**K31 按用户拍板永久保留**作版本化演示数据。
 
 ### 3.4 工单生命周期
@@ -394,6 +396,8 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 
 ### 6.2 管理端（/api/admin/*，X-Admin-Token）
 
+**分页契约**：列表端点统一返回 `{total, list}`，支持 `page`（默认 1）/`size`（默认 20，上限 100；sessions/tickets 上限 50，badcases 上限 50）。例外：FAQ 列表 `/kb` 为运营全量视图（条目量小，不分页）；`/kb/{id}/versions`、`/sessions/{id}/messages` 为从属明细全量。前端 admin.html/agent.html 全列表接 `CS.pager` 分页器。
+
 | Method | Path | 说明 |
 |---|---|---|
 | GET | /api/admin/overview | 会话/工单/解决率/满意度/LLM 用量聚合 |
@@ -406,25 +410,25 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | GET | /api/admin/kb/{id}/versions | KB 版本列表 |
 | POST | /api/admin/kb/{id}/rollback/{revisionId} | 一键回滚 |
 | GET | /api/admin/kb/citation-stats | 引用解决率统计 |
-| GET | /api/admin/badcases | 坏例队列（差评/降级会话） |
-| GET | /api/admin/proactive-events | 主动服务事件留痕 |
-| GET | /api/admin/llm-calls?status= | LLM 调用审计（OK/ERROR/CIRCUIT/BUDGET/FALLBACK/ABORTED） |
+| GET | /api/admin/badcases?page&size | 坏例队列（差评/降级会话，分页） |
+| GET | /api/admin/proactive-events?page&size | 主动服务事件留痕（分页） |
+| GET | /api/admin/llm-calls?status=&page&size | LLM 调用审计（OK/ERROR/CIRCUIT/BUDGET/FALLBACK/ABORTED，分页） |
 | GET | /api/admin/audit-log?action&actor&from&to | 管理变更审计（分页） |
 | GET | /api/admin/metrics | Prometheus 文本指标（text/plain; version=0.0.4） |
 | GET | /api/admin/health | 组件巡检：DB 模式/MQ/LLM/ride·payment 上游/主动服务 |
 | POST | /api/admin/seed | 演示播种（只增不删） |
-| GET/POST | /api/admin/tenants | 租户列表 / 创建 |
+| GET/POST | /api/admin/tenants?page&size | 租户列表（分页）/ 创建 |
 | POST | /api/admin/tenants/{id}/status | body{status} ACTIVE\|FROZEN |
 | POST | /api/admin/subscriptions/grant | body{tenantId, days} 手工开通（source=ADMIN） |
-| GET | /api/admin/subscriptions | 全部租户订阅状态 |
+| GET | /api/admin/subscriptions?page&size | 租户订阅状态（分页） |
 | POST | /api/admin/codes/generate | body{days, count, planCode?} 批量生成激活码 |
-| GET | /api/admin/codes?status= | 激活码列表 |
-| GET | /api/admin/sub-orders | 订阅单审计 |
-| POST/GET | /api/admin/open-keys | body{tenantCode} 生成 / 列表 |
+| GET | /api/admin/codes?status=&page&size | 激活码列表（分页） |
+| GET | /api/admin/sub-orders?page&size | 订阅单审计（分页） |
+| POST/GET | /api/admin/open-keys?tenantCode=&page&size | body{tenantCode} 生成 / 列表（分页） |
 | POST | /api/admin/open-keys/{apiKey}/revoke | 吊销（CAS） |
 | GET | /api/admin/plans | 套餐目录 |
 | POST | /api/admin/invoices/generate | body{tenantCode, period} 月度出账（幂等） |
-| GET | /api/admin/invoices?tenantCode=&period= | 账单查询 |
+| GET | /api/admin/invoices?tenantCode=&period=&page&size | 账单查询（分页） |
 
 ### 6.3 开放 API（/api/open/*，X-Open-Key 租户凭证，v1.2.0）
 
@@ -445,7 +449,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | subscription.html 订阅页 | 租户选择/输入 → 订阅状态卡（有效期/剩余天数/套餐）+ 三档套餐权益对比 + 激活码兑换 + 支付开通（payEnabled 时）；chat 页门槛提示一键跳转 |
 | chat.html 用户咨询端 | 身份选择（乘客/司机/商户 + ID + 租户）→ 订阅状态条 → 对话气泡（SSE 打字机 + 工具状态）+ 引用来源 + **图片上传** + 快捷问题 + 一键建单 + **转人工** + 满意度；会话凭证存 localStorage 随请求携带 |
 | agent.html 客服工作台 | 工单池（筛选+分页）→ 详情抽屉（会话快照+关联订单+时间线+**附件缩略图**）→ 认领/解决/关闭；**人工接管会话服务**（接管/回复/交还，5s 轮询） |
-| admin.html 管理看板 | 统计卡片+趋势 + FAQ 管理（**版本/回滚/引用率**）+ **坏例队列** + LLM 审计 + **租户/激活码/订阅单/open-key/套餐/账单** + **管理审计日志** |
+| admin.html 管理看板 | **7 页签全列表真分页（CS.pager）**：运营总览（卡片+趋势+引用率）/ 会话审计 / FAQ 知识库（**版本/回滚**）/ LLM 审计（6 状态过滤）/ 租户与订阅（订阅状态/激活码/订阅单）/ 审计与坏例（**管理审计日志/坏例队列/主动事件**）/ 开放与账单（**open-key 生成吊销/月度出账**） |
 | health.html 健康页 | 组件徽章表（服务/DB/MQ/LLM/ride·payment/主动服务）5s 轮询 + Prometheus 指标文本预览 |
 
 共享 common.css/common.js（api()/toast/抽屉/分页/escapeHtml，直接移植 ride-pro 组件库风格；api() 对会话路径自动附加 X-Session-Token）。
@@ -497,17 +501,18 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 
 ```bash
 cd cs-pro
-./run.sh             # 默认 H2 单进程：mvnw package -DskipTests + 启动 + 就绪等待（8096）
+./run.sh             # 默认 Docker MySQL 单进程：mvnw package -DskipTests + 启动 + 就绪等待（8096）
 ./run.sh --no-build
 ./stop.sh            # SIGTERM + 15s + SIGKILL 兜底，数据保留
 open http://127.0.0.1:8096/
 
-# 商用模式（可选，v1.2.0）：Docker 共享中间件（与保险系统公用）+ MySQL + RocketMQ + 多实例
+# 前置：Docker 共享中间件（与保险系统公用）；run.sh 默认 mysql，3306 不可达会报错提示
 "$HOME/.docker/bin/docker" compose -f ../ops-pro/deploy/middleware-compose.yml up -d
 mysql -h127.0.0.1 -ucspro -pcspro-dev-2026 cs_pro < db/schema-mysql.sql   # 幂等
-./stop.sh && ./migrate-to-mysql.sh    # 存量 H2 → MySQL（只读源库 + 行数校验 + 序列同步）
-CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build
-CS_PORT=8099 CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build      # 第二实例
+./stop.sh && ./migrate-to-mysql.sh    # 存量 H2 → MySQL（只读源库 + 行数校验 + 序列同步，可选）
+CS_MQ_ENABLED=true ./run.sh --no-build
+CS_PORT=8099 CS_MQ_ENABLED=true ./run.sh --no-build      # 第二实例
+CS_DB_MODE=h2 ./run.sh                # 零依赖 H2 模式（无需 Docker）
 ```
 
 - JAVA_HOME 探测逻辑复用两系统（corretto-18 优先，release=17）。**rebuild 前必须先停运行实例**（jar 覆盖会让运行中 JVM 类加载异常）。
@@ -524,7 +529,7 @@ CS_PORT=8099 CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build      # 第�
 | 层 | 内容 | 结果 |
 |---|---|---|
 | 单测 | KB 打分、工单 CAS、幂等并发、身份注入/越权、LLM 降级熔断、订阅全场景、商用特性（open-key 生命周期/冻结拒绝/会话凭证/老会话兼容/账单聚合幂等/非法账期/审计/metrics） | **48/48** |
-| REST 冒烟 smoke-test.py | 全闭环 + 鉴权 401/403 + 限次超额 + 幂等 + 冻结准入 + 会话凭证 | **62/62 × 双实例**（8096/8099，MySQL+MQ） |
+| REST 冒烟 smoke-test.py | 全闭环 + 鉴权 401/403 + 限次超额 + 幂等 + 冻结准入 + 会话凭证 + 管理列表分页契约 | **86/86 × 双实例**（8096/8099，MySQL+MQ） |
 | LLM 评测 llm-eval.py | 17 项语义断言（钱包/订单/计价/多轮记忆/拒代办/越权/流水/接管全链路），独立评测租户自动开通 | **17/17**（真实 DeepSeek） |
 | 商用 live | F 批 26 项 + 令牌轮换 4 项（开放 API/会话凭证/账单/审计/metrics/健康） | 全过 |
 | 浏览器实测 | 五页面全流程（SSE 打字机/图片上传/工单抽屉/看板/健康页轮询） | 全过 |
@@ -538,7 +543,7 @@ CS_PORT=8099 CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build      # 第�
 | 边界（本期取舍） | 演进 |
 |---|---|
 | ~~单进程 H2~~ **已交付双模 + 多实例（v1.2.0）** | 熔断/并发配额/预算计数仍在进程内，严格全局限流需 Redis 外置（共享栈已有容器） |
-| BM25 字面检索 | embedding 向量检索（需外部模型或本地 embedding 服务） |
+| ~~BM25 字面检索~~ **已交付混合检索（Qdrant + 本地 ONNX，RRF 融合）** | 更大 embedding 模型 / rerank 精排；向量库集群化 |
 | 无登录体系，ID 直查 | 统一登录 token + 身份绑定（与 ride L8' 同步演进） |
 | 人工接管用 5s 轮询 | agent WS 通道实现在线转接（Netty 复用 ride-push 模式） |
 | ~~LLM 单供应商~~ **已交付主备路由链（v1.2.0）** | 多供应商加权路由、本地小模型兜底 |

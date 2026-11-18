@@ -205,35 +205,57 @@ public class AdminController {
         return Result.ok(kb.citationStats());
     }
 
+    @PostMapping("/kb/reindex")
+    public Result<Map<String, Object>> kbReindex() {
+        int n = kb.reindexVectors();
+        audit("KB_REINDEX", null, "vectors=" + n);
+        return Result.ok(Map.of("indexed", n));
+    }
+
+    @GetMapping("/kb/vector-status")
+    public Result<Map<String, Object>> kbVectorStatus() {
+        return Result.ok(kb.vectorStatus());
+    }
+
     // ---- 坏例队列 ----
 
     @GetMapping("/badcases")
-    public Result<List<Map<String, Object>>> badcases(@RequestParam(defaultValue = "20") int limit) {
-        return Result.ok(chat.badcases(limit));
+    public Result<Map<String, Object>> badcases(@RequestParam(defaultValue = "1") int page,
+                                                @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(chat.badcases(page, size));
     }
 
     // ---- 主动服务事件 ----
 
     @GetMapping("/proactive-events")
-    public Result<List<com.qoder.cs.facade.dto.ProactiveEventDTO>> proactiveEvents(
-            @RequestParam(defaultValue = "50") int limit) {
-        return Result.ok(proactiveEvents.recent(Math.min(limit, 100)));
+    public Result<Map<String, Object>> proactiveEvents(@RequestParam(defaultValue = "1") int page,
+                                                       @RequestParam(defaultValue = "50") int size) {
+        int limit = Math.min(size, 100);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total", proactiveEvents.count());
+        out.put("list", proactiveEvents.page((page - 1) * limit, limit));
+        return Result.ok(out);
     }
 
     // ---- LLM 审计 ----
 
     @GetMapping("/llm-calls")
-    public Result<List<LlmCallDTO>> llmCalls(@RequestParam(required = false) String status,
-                                             @RequestParam(defaultValue = "1") int page,
-                                             @RequestParam(defaultValue = "20") int size) {
-        return Result.ok(llmCalls.query(status, (page - 1) * Math.min(size, 100), Math.min(size, 100)));
+    public Result<Map<String, Object>> llmCalls(@RequestParam(required = false) String status,
+                                                @RequestParam(defaultValue = "1") int page,
+                                                @RequestParam(defaultValue = "20") int size) {
+        int limit = Math.min(size, 100);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total", status == null || status.isBlank() ? llmCalls.countAll() : llmCalls.countByStatus(status));
+        out.put("list", llmCalls.query(status, (page - 1) * limit, limit));
+        return Result.ok(out);
     }
 
     // ---- 租户与订阅 ----
 
     @GetMapping("/tenants")
-    public Result<List<TenantDTO>> tenants() {
-        return Result.ok(subscriptions.listTenants());
+    public Result<Map<String, Object>> tenants(@RequestParam(defaultValue = "1") int page,
+                                               @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(subscriptions.queryTenants(page, size));
     }
 
     @PostMapping("/tenants")
@@ -260,13 +282,16 @@ public class AdminController {
     }
 
     @GetMapping("/codes")
-    public Result<List<ActivationCodeDTO>> codes(@RequestParam(required = false) String status) {
-        return Result.ok(subscriptions.listCodes(status));
+    public Result<Map<String, Object>> codes(@RequestParam(required = false) String status,
+                                             @RequestParam(defaultValue = "1") int page,
+                                             @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(subscriptions.queryCodes(status, page, size));
     }
 
     @GetMapping("/subscriptions")
-    public Result<List<Map<String, Object>>> subscriptions() {
-        return Result.ok(subscriptions.allSubscriptions());
+    public Result<Map<String, Object>> subscriptions(@RequestParam(defaultValue = "1") int page,
+                                                     @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(subscriptions.querySubscriptions(page, size));
     }
 
     @PostMapping("/subscriptions/grant")
@@ -279,8 +304,9 @@ public class AdminController {
     }
 
     @GetMapping("/sub-orders")
-    public Result<List<SubOrderDTO>> subOrders() {
-        return Result.ok(pay.list());
+    public Result<Map<String, Object>> subOrders(@RequestParam(defaultValue = "1") int page,
+                                                 @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(pay.list(page, size));
     }
 
     @PostMapping("/seed")
@@ -300,8 +326,10 @@ public class AdminController {
     }
 
     @GetMapping("/open-keys")
-    public Result<List<OpenKeyDTO>> openKeys(@RequestParam(required = false) String tenantCode) {
-        return Result.ok(openKeys.list(tenantCode));
+    public Result<Map<String, Object>> openKeys(@RequestParam(required = false) String tenantCode,
+                                                @RequestParam(defaultValue = "1") int page,
+                                                @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(openKeys.query(tenantCode, page, size));
     }
 
     @PostMapping("/open-keys/{apiKey}/revoke")
@@ -326,8 +354,10 @@ public class AdminController {
     }
 
     @GetMapping("/invoices")
-    public Result<List<InvoiceDTO>> invoices(@RequestParam(required = false) String tenantCode,
-                                             @RequestParam(required = false) String period) {
-        return Result.ok(invoices.list(tenantCode, period));
+    public Result<Map<String, Object>> invoices(@RequestParam(required = false) String tenantCode,
+                                                @RequestParam(required = false) String period,
+                                                @RequestParam(defaultValue = "1") int page,
+                                                @RequestParam(defaultValue = "20") int size) {
+        return Result.ok(invoices.query(tenantCode, period, page, size));
     }
 }

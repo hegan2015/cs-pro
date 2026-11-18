@@ -178,9 +178,45 @@ check("趋势 7 行", len(trend) == 7)
 audit_rows = 0
 for st in ("OK", "ERROR", "FALLBACK"):
     s, b = call("GET", f"/api/admin/llm-calls?status={st}", headers=ADMIN)
-    ok(f"LLM 审计查询 {st}", s, b)
-    audit_rows += len(b.get("data") or [])
+    d = ok(f"LLM 审计查询 {st}", s, b)
+    check(f"LLM 审计 {st} 分页结构", isinstance(d, dict) and isinstance(d.get("total"), int)
+          and isinstance(d.get("list"), list), str(d)[:120])
+    audit_rows += len(d.get("list") or [])
 check("LLM 审计有记录", audit_rows >= 1, f"rows={audit_rows}")
+
+# 12b. 管理列表分页契约：{total,list} + page/size 生效
+for ep in ("/api/admin/codes", "/api/admin/tenants", "/api/admin/subscriptions",
+           "/api/admin/sub-orders", "/api/admin/open-keys", "/api/admin/invoices",
+           "/api/admin/audit-log", "/api/admin/badcases", "/api/admin/proactive-events"):
+    s, b = call("GET", ep + "?page=1&size=2", headers=ADMIN)
+    d = ok(f"分页 {ep}", s, b)
+    check(f"分页契约 {ep}", isinstance(d, dict) and isinstance(d.get("total"), int)
+          and isinstance(d.get("list"), list) and len(d["list"]) <= 2, str(d)[:120])
+s, b = call("GET", "/api/admin/codes?page=1&size=1", headers=ADMIN)
+c1 = ok("激活码第 1 页", s, b)
+s, b = call("GET", "/api/admin/codes?page=2&size=1", headers=ADMIN)
+c2 = ok("激活码第 2 页", s, b)
+check("激活码翻页不重复", c1["total"] >= 2 and c1["list"] and c2["list"]
+      and c1["list"][0]["code"] != c2["list"][0]["code"],
+      f"total={c1['total']}")
+
+# 12c. 向量检索：状态端点 + 重建与状态一致（容器不可达时验证降级而非报错）
+s, b = call("GET", "/api/admin/kb/vector-status", headers=ADMIN)
+vs = ok("向量状态端点", s, b)
+check("向量状态契约", isinstance(vs, dict) and "enabled" in vs and "embeddingUp" in vs
+      and "qdrantUp" in vs and "indexed" in vs and "kbTotal" in vs, str(vs)[:160])
+s, b = call("GET", "/api/admin/health", headers=ADMIN)
+hd = ok("健康详情含向量", s, b)
+check("健康详情 vector 组件", isinstance(hd, dict) and isinstance(hd.get("vector"), dict), str(hd)[:160])
+vec_up = bool(vs and vs.get("enabled") and vs.get("embeddingUp") and vs.get("qdrantUp"))
+s, b = call("POST", "/api/admin/kb/reindex", headers=ADMIN)
+if vec_up:
+    rd = ok("向量索引重建", s, b)
+    check("重建数与启用条目一致", rd and rd.get("indexed") == vs.get("kbTotal") and rd.get("indexed") > 0,
+          f"indexed={rd and rd.get('indexed')} kbTotal={vs.get('kbTotal')}")
+else:
+    check("向量不可用时重建报业务错（降级不崩）", b.get("code") != "00000",
+          f"status={s} body={json.dumps(b, ensure_ascii=False)[:120]}")
 
 # 13. 静态页面
 for page in ["/", "/chat.html", "/subscription.html", "/agent.html", "/admin.html"]:

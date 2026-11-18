@@ -90,6 +90,14 @@ public class SubscriptionService {
         return tenantMapper.selectAll();
     }
 
+    public Map<String, Object> queryTenants(int page, int size) {
+        int limit = Math.min(size, 100);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total", tenantMapper.countAll());
+        out.put("list", tenantMapper.page((page - 1) * limit, limit));
+        return out;
+    }
+
     public void setTenantStatus(String tenantId, String status) {
         if (!"ACTIVE".equals(status) && !"FROZEN".equals(status)) {
             throw BizException.param("status 仅 ACTIVE/FROZEN");
@@ -184,6 +192,14 @@ public class SubscriptionService {
         return codeMapper.list(status);
     }
 
+    public Map<String, Object> queryCodes(String status, int page, int size) {
+        int limit = Math.min(size, 100);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total", codeMapper.count(status));
+        out.put("list", codeMapper.page(status, (page - 1) * limit, limit));
+        return out;
+    }
+
     /** 兑换：单事务 CAS 一码一用 + 延长订阅。 */
     public SubscriptionDTO redeem(String tenantCode, String code) {
         TenantDTO t = requireTenant(tenantCode);
@@ -211,14 +227,31 @@ public class SubscriptionService {
         List<Map<String, Object>> out = new ArrayList<>();
         long now = System.currentTimeMillis();
         for (TenantDTO t : tenantMapper.selectAll()) {
-            SubscriptionDTO sub = tenantMapper.selectSubscription(t.getId());
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("tenant", t);
-            row.put("subscription", sub);
-            row.put("subscribed", sub != null && sub.getExpireAt() > now);
-            out.add(row);
+            out.add(subscriptionRow(t, now));
         }
         return out;
+    }
+
+    public Map<String, Object> querySubscriptions(int page, int size) {
+        int limit = Math.min(size, 100);
+        long now = System.currentTimeMillis();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (TenantDTO t : tenantMapper.page((page - 1) * limit, limit)) {
+            rows.add(subscriptionRow(t, now));
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total", tenantMapper.countAll());
+        out.put("list", rows);
+        return out;
+    }
+
+    private Map<String, Object> subscriptionRow(TenantDTO t, long now) {
+        SubscriptionDTO sub = tenantMapper.selectSubscription(t.getId());
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("tenant", t);
+        row.put("subscription", sub);
+        row.put("subscribed", sub != null && sub.getExpireAt() > now);
+        return row;
     }
 
     // ---- 免费额度 ----

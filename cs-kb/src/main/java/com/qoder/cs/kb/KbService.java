@@ -21,7 +21,11 @@ public class KbService {
     private final KbMapper kbMapper;
     private final KbRevisionMapper revisionMapper;
     private final com.qoder.cs.common.id.IdGenerator ids;
+    private final com.qoder.cs.kb.vector.VectorIndex vector;
     private final Bm25Index index = new Bm25Index();
+
+    @org.springframework.beans.factory.annotation.Value("${cs.vector.rrf-k:60}")
+    private int rrfK;
 
     /** TopK 结果短 TTL 缓存：高频重复问题免重复检索；KB 任何变更（rebuildIndex）即失效 */
     @org.springframework.beans.factory.annotation.Value("${cs.kb.cache-ttl-ms:30000}")
@@ -32,7 +36,11 @@ public class KbService {
     private record CachedHits(List<Hit> hits, long at) {
     }
 
-    public record Hit(KbEntryDTO entry, double score) {
+    /** score 为 BM25 分，vectorScore 为向量 cosine 分（未命中向量为 0）；直答判定分别用各自阈值。 */
+    public record Hit(KbEntryDTO entry, double score, double vectorScore) {
+        public Hit(KbEntryDTO entry, double score) {
+            this(entry, score, 0.0);
+        }
     }
 
     @PostConstruct
@@ -57,11 +65,35 @@ public class KbService {
         if (cached != null && now - cached.at() < cacheTtlMs) {
             return cached.hits();
         }
+        int fetch = Math.max(limit * 3, 10);
+        List<Bm25Index.Scored> bm25 = index.search(query, fetch);
+        List<com.qoder.cs.kb.vector.VectorIndex.VectorHit> vec = vector.search(query, fetch);
         List<Hit> hits = new ArrayList<>();
-        for (Bm25Index.Scored s : index.search(query, limit)) {
-            KbEntryDTO e = kbMapper.selectById(s.id());
-            if (e != null && Boolean.TRUE.equals(e.getEnabled())) {
-                hits.add(new Hit(e, s.score()));
+        if (vec.isEmpty()) {
+            for (Bm25Index.Scored s : bm25.subList(0, Math.min(limit, bm25.size()))) {
+                KbEntryDTO e = kbMapper.selectById(s.id());
+                if (e != null && Boolean.TRUE.equals(e.getEnabled())) {
+                    hits.add(new Hit(e, s.score()));
+                }
+            }
+        } else {
+            Map<String, Double> bmScores = new LinkedHashMap<>();
+            Map<String, Double> vecScores = new LinkedHashMap<>();
+            List<String> bmIds = new ArrayList<>();
+            List<String> vecIds = new ArrayList<>();
+            for (Bm25Index.Scored s : bm25) {
+                bmIds.add(s.id());
+                bmScores.put(s.id(), s.score());
+            }
+            for (var v : vec) {
+                vecIds.add(v.kbId());
+                vecScores.put(v.kbId(), v.score());
+            }
+            for (String id : com.qoder.cs.kb.vector.VectorIndex.rrfFuse(bmIds, vecIds, rrfK, limit)) {
+                KbEntryDTO e = kbMapper.selectById(id);
+                if (e != null && Boolean.TRUE.equals(e.getEnabled())) {
+                    hits.add(new Hit(e, bmScores.getOrDefault(id, 0.0), vecScores.getOrDefault(id, 0.0)));
+                }
             }
         }
         if (cacheTtlMs > 0) {
@@ -71,6 +103,30 @@ public class KbService {
             searchCache.put(key, new CachedHits(hits, now));
         }
         return hits;
+    }
+
+    /** 管理端全量重建向量索引（失败抛出，BM25 不受影响）。 */
+    public int reindexVectors() {
+        try {
+            int n = vector.reindex(kbMapper.selectEnabled());
+            searchCache.clear();
+            return n;
+        } catch (Exception e) {
+            throw com.qoder.cs.common.exception.BizException.conflict("向量服务不可用: " + e);
+        }
+    }
+
+    public Map<String, Object> vectorStatus() {
+        var s = vector.status();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("enabled", s.enabled());
+        out.put("embeddingUp", s.embeddingUp());
+        out.put("qdrantUp", s.qdrantUp());
+        out.put("indexed", s.indexed());
+        out.put("kbTotal", kbMapper.selectEnabled().size());
+        out.put("model", s.model());
+        out.put("dim", s.dim());
+        return out;
     }
 
     public void recordHit(String id) {
@@ -99,6 +155,7 @@ public class KbService {
         e.setUpdatedAt(System.currentTimeMillis());
         kbMapper.insert(e);
         rebuildIndex();
+        vector.syncEntry(e);
         return e;
     }
 
@@ -117,6 +174,7 @@ public class KbService {
         e.setUpdatedAt(System.currentTimeMillis());
         kbMapper.insert(e);
         rebuildIndex();
+        vector.syncEntry(e);
         return true;
     }
 
@@ -132,7 +190,9 @@ public class KbService {
         upd.setUpdatedAt(System.currentTimeMillis());
         kbMapper.update(upd);
         rebuildIndex();
-        return kbMapper.selectById(id);
+        KbEntryDTO saved = kbMapper.selectById(id);
+        vector.syncEntry(saved);
+        return saved;
     }
 
     // ---- KB 版本化与回滚 ----
@@ -174,6 +234,7 @@ public class KbService {
         cur.setUpdatedAt(System.currentTimeMillis());
         kbMapper.update(cur);
         rebuildIndex();
+        vector.syncEntry(kbMapper.selectById(kbId));
         log.info("KB 回滚 id={} revisionId={}", kbId, revisionId);
         return kbMapper.selectById(kbId);
     }
@@ -218,6 +279,7 @@ public class KbService {
             throw com.qoder.cs.common.exception.BizException.notFound("FAQ 不存在: " + id);
         }
         rebuildIndex();
+        vector.removeEntry(id);
     }
 
     private static void validate(KbUpsertRequest req) {

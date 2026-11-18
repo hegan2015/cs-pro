@@ -4,13 +4,13 @@
 
 定位：为 ride-pro（打车）与 payment-pro（支付）提供**统一智能客服入口**，覆盖「租户订阅准入 → 机器人自动问答（LLM）→ 业务只读查询 → 工单与统计」闭环。
 
-> 状态说明：v1.2.0 已交付验证（48/48 单测 + 62/62 REST 冒烟 × 双实例 + 17/17 LLM 评测集 + F 批 live 26 项 + 浏览器实测）。本版新增：**商用底座**（Docker 共享中间件与保险系统公用 / H2⇄MySQL 双模持久层 + 迁移工具 / RocketMQ 事件总线可降级 / 多实例跨实例 SSE）与**六特性批**（LLM 治理：分级 max-tokens·备用路由·promptVersion·注入防护·PII 打码 / 租户并发配额 429 / RAG 改写·TopK 缓存·滚动摘要 / 坏例队列·KB 版本化回滚·引用解决率 / 图片多模态·多语言·主动服务轮询 / 开放 API 凭证·会话凭证·套餐账单·管理审计·Prometheus metrics·健康页·CI）。**默认仍零依赖**：H2 文件库 + 单进程 `./run.sh` 一键启动；商用模式（MySQL+RocketMQ）可选启用。DeepSeek 真实联调通过。LLM Key 存仓库外 `~/.config/cs-pro/llm.properties`；无 Key 时自动按**降级模式**运行（FAQ 直答 + 工单/统计/查询全闭环可用）。本文档与 DESIGN 同步维护。
+> 状态说明：v1.2.0 已交付验证（48/48 单测 + 86/86 REST 冒烟 × 双实例 + 17/17 LLM 评测集 + F 批 live 26 项 + 浏览器实测）。本版新增：**商用底座**（Docker 共享中间件与保险系统公用 / H2⇄MySQL 双模持久层 + 迁移工具 / RocketMQ 事件总线可降级 / 多实例跨实例 SSE）与**六特性批**（LLM 治理：分级 max-tokens·备用路由·promptVersion·注入防护·PII 打码 / 租户并发配额 429 / RAG 改写·TopK 缓存·滚动摘要 / 坏例队列·KB 版本化回滚·引用解决率 / 图片多模态·多语言·主动服务轮询 / 开放 API 凭证·会话凭证·套餐账单·管理审计·Prometheus metrics·健康页·CI）。**默认 Docker MySQL**（2026-11-18 用户拍板「h2改为mysql，docker里的」）：`./run.sh` 直连共享栈 MySQL；`CS_DB_MODE=h2` 保留零依赖形态。管理端全列表真分页（{total,list}+page/size）+ 审计/坏例/开放凭证/账单页签。DeepSeek 真实联调通过。LLM Key 存仓库外 `~/.config/cs-pro/llm.properties`；无 Key 时自动按**降级模式**运行（FAQ 直答 + 工单/统计/查询全闭环可用）。本文档与 DESIGN 同步维护。
 
 ## 1. 目标与硬约束
 
 | 目标 | 说明 |
 |---|---|
-| 机器人自动问答 | LLM API + FAQ 知识库（BM25 RAG）+ 业务数据（Function Calling） |
+| 机器人自动问答 | LLM API + FAQ 知识库（BM25 + 向量混合 RAG）+ 业务数据（Function Calling） |
 | 业务查询 | 对话中直查 ride 订单/钱包/流水、payment 交易/账户，**只读不写** |
 | 工单与统计 | 机器人解决不了 → 工单流转；会话/解决率/满意度/LLM 用量报表 |
 | 租户订阅 | 商户/租户级订阅准入：免费 FAQ 限次 + 订阅解锁全功能，三档套餐 |
@@ -18,7 +18,7 @@
 
 硬约束（对齐 ride/payment 两系统惯例）：
 
-- **默认零外部部署依赖**：Java 17 + Spring Boot 3.2 + Maven + H2 文件库，`./run.sh` 一键启动；LLM 是唯一外部调用且有完整降级。**商用模式可选**：`CS_DB_MODE=mysql CS_MQ_ENABLED=true` 切换共享 MySQL + RocketMQ（Docker 栈与保险理赔系统公用），不启用时行为与 v1.1 完全一致。
+- **默认 Docker MySQL**：Java 17 + Spring Boot 3.2 + Maven，`./run.sh` 一键启动（默认连 claim-shared 共享栈的 MySQL，与保险理赔系统公用；启动前自检 3306 可达并给出启动提示）；`CS_DB_MODE=h2` 可切回零依赖 H2 文件库。LLM 是唯一外部调用且有完整降级。**RocketMQ 可选**：`CS_MQ_ENABLED=true` 启用跨实例 SSE 广播 + 审计异步落库，不可用自动降级直写。
 - **数据保护**：`data/` 只增不删；停服务不触碰数据；迁移工具对 H2 只读。
 - **零侵入**：ride/payment 不改一行代码、零 schema 改动；cs-pro 宕机对两系统零影响。
 - **资金安全边界**：对业务系统默认只读；**唯一例外**是订阅购买经批准调用 payment-pro `trade.create/trade.pay`（金额服务端固定，LLM 工具层永不触达写端点）。
@@ -30,10 +30,10 @@
 |---|---|
 | 架构形态 | 单进程 Spring Boot + REST 集成（内部模块化，不引 Dubbo/ZK）；支持同库多实例水平部署 |
 | LLM 接入 | OpenAI 兼容协议统一客户端（JDK HttpClient，不引第三方 SDK），适配 OpenAI/DeepSeek/通义/Kimi/Ollama；主备路由链 + 视觉模型 |
-| 知识库检索 | 本地 BM25 倒排（中文 n-gram + 同义词扩展，进程内索引，零依赖）+ 查询改写 + TopK 短 TTL 缓存 |
+| 知识库检索 | 本地 BM25 倒排（中文 n-gram + 同义词扩展，进程内索引）+ **Qdrant 向量检索**（本地 ONNX Embedding，RRF 融合）+ 查询改写 + TopK 短 TTL 缓存；向量容器不可达自动降级纯 BM25 |
 | payment 查询通道 | 8443 OpenAPI HMAC 验签（独立注册 cs-pro 商户，自签证书定向信任） |
 | 实时推送 | SSE 单向流（token 级打字机 + 工具状态事件）；多实例经 RocketMQ 广播 |
-| 存储 | **双模**：默认 H2 单文件库 `data/cs.mv.db`（MODE=MySQL）；商用 MySQL 8（`db/schema-mysql.sql`，与保险系统共用 Docker 容器） |
+| 存储 | **双模**：默认 Docker MySQL 8（claim-shared 共享栈 `cs_pro` 库，`db/schema-mysql.sql`）；`CS_DB_MODE=h2` 切回 H2 单文件库 `data/cs.mv.db`（MODE=MySQL） |
 | 消息 | 可选 RocketMQ 5（共享 Docker 栈）：SSE 跨实例广播 + 审计异步落库，失败自动降级直写 |
 
 ## 3. 架构与模块
@@ -59,7 +59,7 @@ Maven 六模块（单运行进程 cs-gateway，可多实例）：
 |---|---|
 | cs-common | Result/错误码/BizException/MoneyUtil(分)/TraceFilter/IdGenerator（H2 SEQUENCE ⇄ MySQL 号表双方言） |
 | cs-facade | DTO 契约（进程内引用，预留拆进程边界） |
-| cs-kb | FAQ 知识库 + BM25 检索 + 版本化快照 |
+| cs-kb | FAQ 知识库 + BM25 检索 + 向量混合检索（Qdrant）+ 版本化快照 |
 | cs-llm | OpenAI 兼容客户端 + 工具调用协议 + 降级熔断 + 主备路由 + 视觉 |
 | cs-core | 对话编排 / 工单 / 统计 / 订阅 / biz 查询适配器 / 开放凭证 / 账单 / 管理审计 / MQ 集成 |
 | cs-gateway | REST + SSE + H5 静态托管 + 管理/会话/开放三级鉴权（唯一运行进程） |
@@ -77,7 +77,7 @@ Maven 六模块（单运行进程 cs-gateway，可多实例）：
 工具安全三原则：身份参数服务端注入（LLM 不可决定）+ orderId 归属校验（防越权，不匹配返回 A0404 不泄漏存在性）；无写工具；结果脱敏后进 prompt（手机号掩码、卡号前 6 后 4），**LLM 输出侧另做 PII 打码**（mask-pii）。
 
 ### 4.3 知识库 RAG 与知识运营
-中文 n-gram 倒排 + BM25 打分 + 12 组同义词扩展，Top3 注入 system prompt；KB 变更即重建索引。**运营闭环**：每次改写前旧版快照（cs_kb_revision）支持一键回滚；差评/降级会话自动入**坏例队列**；**引用解决率**统计（cited_count/cited_resolved_count）回答"哪条 FAQ 真正管用"。
+中文 n-gram 倒排 + BM25 打分 + 12 组同义词扩展，Top3 注入 system prompt；KB 变更即重建索引。**混合检索（2026-11-18 用户拍板引入向量库）**：Qdrant 单容器（共享栈 claim-shared，6333）+ 本地 ONNX Embedding 容器（cs-embedding，8100，bge-small-zh-v1.5 int8，512 维，模型烘进镜像），BM25 与向量双榜 **RRF 融合**（k=60）；FAQ 直答双阈值（BM25≥1.0 或 cosine≥0.65，后者按 int8 模型实测校准：同主题改写 0.66~0.81、跨主题≤0.50）。**旁路降级**：任一容器不可达→纯 BM25，失败熔断 30s；启动自动补建索引，管理台可一键重建（`POST /api/admin/kb/reindex`）与状态查看（`GET /api/admin/kb/vector-status`）；`CS_VECTOR_ENABLED=false` 整体关闭。**运营闭环**：每次改写前旧版快照（cs_kb_revision）支持一键回滚；差评/降级会话自动入**坏例队列**；**引用解决率**统计（cited_count/cited_resolved_count）回答"哪条 FAQ 真正管用"。
 
 ### 4.4 工单生命周期
 `OPEN → PROCESSING → RESOLVED → CLOSED`（分派即进入 PROCESSING；用户确认或 7 天自动关闭），OPEN/PROCESSING 可本人撤单 CANCELLED。全部流转 CAS；建单幂等 `request_id` 唯一键；携带会话快照/关联订单/分类/优先级/来源/**图片附件**；满意度 1–5 星（PK 防重）。
@@ -131,7 +131,7 @@ REST 契约详见 DESIGN §6。成功 body 为 data，失败 Result `{code, mess
 | subscription.html | 订阅状态卡 + 套餐权益对比 + 激活码兑换 + 支付开通（payEnabled 时） |
 | chat.html | 身份选择 + 订阅状态条 + SSE 打字机对话 + 引用来源 + 图片上传 + 一键建单 + 转人工 + 满意度 |
 | agent.html | 工单池筛选分页 + 详情抽屉（会话快照/时间线/附件缩略图）+ 分派/解决 + 人工接管会话服务 |
-| admin.html | 统计看板 + FAQ 管理（版本/回滚/引用率）+ 坏例 + LLM 审计 + 租户/激活码/订阅单/open-key/账单 + 管理审计 |
+| admin.html | 7 页签全列表真分页：运营总览 + 会话审计 + FAQ 管理（版本/回滚/引用率）+ LLM 审计（6 状态）+ 租户/激活码/订阅单 + 管理审计/坏例/主动事件 + open-key/账单 |
 | health.html | 组件巡检徽章（DB/MQ/LLM/上游/主动服务）5s 轮询 + Prometheus 指标预览 |
 
 ## 8. 安全与正确性要点
@@ -147,17 +147,24 @@ REST 契约详见 DESIGN §6。成功 body 为 data，失败 Result `{code, mess
 
 ```bash
 cd cs-pro
-./run.sh                # 默认：H2 单进程（8096），mvnw package + 启动 + 就绪等待
+./run.sh                # 默认：Docker MySQL 单进程（8096），mvnw package + 启动 + 就绪等待
 ./run.sh --no-build
 ./stop.sh               # SIGTERM + 15s + SIGKILL 兜底，数据保留
 open http://127.0.0.1:8096/
 
-# 商用模式（可选）：共享 Docker 中间件（与保险系统公用）+ MySQL + RocketMQ + 多实例
+# 前置：共享 Docker 中间件（与保险系统公用）；run.sh 默认 mysql 模式，3306 不可达会报错并提示
 "$HOME/.docker/bin/docker" compose -f ../ops-pro/deploy/middleware-compose.yml up -d
 mysql -h127.0.0.1 -ucspro -pcspro-dev-2026 cs_pro < db/schema-mysql.sql
-./stop.sh && ./migrate-to-mysql.sh        # 存量 H2 → MySQL（只读源库 + 行数校验）
-CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build
-CS_PORT=8099 CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build   # 第二实例
+./stop.sh && ./migrate-to-mysql.sh        # 存量 H2 → MySQL（只读源库 + 行数校验，可选）
+
+# 可选：向量混合检索（Qdrant 6333 + 本地 ONNX embedding 8100，同 claim-shared 栈；不可达自动降级纯 BM25）
+./deploy/embedding/download-model.sh      # 首次：ModelScope 预下载模型（int8 24MB，gitignored）
+"$HOME/.docker/bin/docker" compose -f deploy/vector-compose.yml up -d --build
+CS_VECTOR_ENABLED=false ./run.sh          # 整体关闭向量通道
+
+CS_MQ_ENABLED=true ./run.sh --no-build    # RocketMQ 可选（跨实例 SSE + 审计异步）
+CS_PORT=8099 CS_MQ_ENABLED=true ./run.sh --no-build   # 第二实例
+CS_DB_MODE=h2 ./run.sh                    # 零依赖 H2 模式（无需 Docker）
 
 # 可选：payment-pro OpenAPI 入驻（pp 查询/订阅支付）
 ./integrate-payment.sh
@@ -174,7 +181,7 @@ CS_PORT=8099 CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build   # 第二�
 | 层 | 内容 |
 |---|---|
 | 单测 | 48 项：KB 打分、工单 CAS、幂等并发、身份注入/越权、LLM 降级熔断、订阅全场景、**商用特性**（open-key 生命周期/冻结拒绝/会话凭证/老会话兼容/账单聚合幂等/非法账期/审计/metrics） |
-| REST 冒烟 | smoke-test.py **62 项** × 双实例（8096/8099，MySQL+MQ）：全闭环 + 鉴权 401/403 + 限次超额 + 幂等 + 冻结准入 |
+| REST 冒烟 | smoke-test.py **86 项** × 双实例（8096/8099，MySQL+MQ）：全闭环 + 鉴权 401/403 + 限次超额 + 幂等 + 冻结准入 + 管理列表分页契约 |
 | LLM 评测 | llm-eval.py **17 项**语义断言（真实 DeepSeek，独立评测租户自动开通）：钱包/订单/计价/多轮记忆/拒代办/越权/流水/接管全链路 |
 | 商用 live | F 批 26 项 + 令牌轮换 4 项：开放 API/会话凭证/账单/审计/metrics/健康全过 |
 | 浏览器实测 | 五页面全流程（SSE 打字机/图片上传/工单抽屉/看板/健康页轮询） |
@@ -182,7 +189,7 @@ CS_PORT=8099 CS_DB_MODE=mysql CS_MQ_ENABLED=true ./run.sh --no-build   # 第二�
 
 ## 11. 已知边界与演进
 
-BM25 → embedding 向量检索；ID 直查 → 统一登录；工单异步 → 在线人工转接（WS）；开放 API → HMAC 签名 + 限流；熔断/配额/预算进程内 → Redis 外置全局（共享栈已有容器）；账单演示口径 → 真实出账；pp 联查需 pp 订单号 → ride 侧只读映射端点（侵入式改动届时单独确认）。
+ID 直查 → 统一登录；工单异步 → 在线人工转接（WS）；开放 API → HMAC 签名 + 限流；熔断/配额/预算进程内 → Redis 外置全局（共享栈已有容器）；账单演示口径 → 真实出账；pp 联查需 pp 订单号 → ride 侧只读映射端点（侵入式改动届时单独确认）。
 
 ## 12. 待拍板事项
 
@@ -197,7 +204,7 @@ BM25 → embedding 向量检索；ID 直查 → 统一登录；工单异步 → 
 cs-pro/
 ├── pom.xml / mvnw / .mvn/     # Maven 多模块 + wrapper
 ├── run.sh / stop.sh           # 一键启停（CS_PORT/CS_DB_MODE/CS_MQ_ENABLED/ADMIN_TOKEN）
-├── smoke-test.py / llm-eval.py # REST 冒烟（62 项）/ LLM 行为评测集（17 项）
+├── smoke-test.py / llm-eval.py # REST 冒烟（86 项）/ LLM 行为评测集（17 项）
 ├── migrate-to-mysql.sh / tools/ # H2 → MySQL 迁移（只读源库 + 行数校验）
 ├── integrate-payment.sh       # payment-pro OpenAPI 一键入驻（可选）
 ├── db/schema-mysql.sql        # MySQL 建表（幂等；商用模式手动执行）

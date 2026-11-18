@@ -19,6 +19,12 @@ public interface SubOrderMapper {
     @Select("SELECT * FROM cs_sub_order ORDER BY created_at DESC")
     List<SubOrderDTO> selectAll();
 
+    @Select("SELECT COUNT(*) FROM cs_sub_order")
+    long countAll();
+
+    @Select("SELECT * FROM cs_sub_order ORDER BY created_at DESC, id LIMIT #{size} OFFSET #{offset}")
+    List<SubOrderDTO> page(@Param("offset") int offset, @Param("size") int size);
+
     @Select("SELECT * FROM cs_sub_order WHERE status = 'PENDING' AND pp_order_id IS NOT NULL")
     List<SubOrderDTO> selectPending();
 

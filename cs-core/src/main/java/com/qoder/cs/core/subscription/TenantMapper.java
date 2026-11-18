@@ -13,6 +13,12 @@ public interface TenantMapper {
     @Select("SELECT * FROM cs_tenant ORDER BY id")
     List<TenantDTO> selectAll();
 
+    @Select("SELECT COUNT(*) FROM cs_tenant")
+    long countAll();
+
+    @Select("SELECT * FROM cs_tenant ORDER BY id LIMIT #{size} OFFSET #{offset}")
+    List<TenantDTO> page(@Param("offset") int offset, @Param("size") int size);
+
     @Select("SELECT * FROM cs_tenant WHERE id = #{id}")
     TenantDTO selectById(@Param("id") String id);
 

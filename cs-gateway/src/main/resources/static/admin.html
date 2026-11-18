@@ -30,6 +30,8 @@
     <button data-tab="kb" onclick="switchTab('kb')">FAQ 知识库</button>
     <button data-tab="llm" onclick="switchTab('llm')">LLM 审计</button>
     <button data-tab="sub" onclick="switchTab('sub')">租户与订阅</button>
+    <button data-tab="audit" onclick="switchTab('audit')">审计与坏例</button>
+    <button data-tab="open" onclick="switchTab('open')">开放与账单</button>
   </div>
 
   <div id="tab-overview">
@@ -50,11 +52,12 @@
     <div class="card">
       <h2>会话列表</h2>
       <div class="row" style="margin-bottom:10px">
-        <select id="sessStatus" onchange="loadSessions()" style="max-width:160px">
+        <select id="sessStatus" onchange="loadSessions(1)" style="max-width:160px">
           <option value="">全部状态</option><option value="ACTIVE">进行中</option><option value="ENDED">已结束</option>
         </select>
       </div>
       <div id="sessionList"></div>
+      <div id="sessPager"></div>
     </div>
     <div class="card" id="sessMsgCard" style="display:none">
       <h2>会话消息 <span class="mono" id="sessMsgId"></span></h2>
@@ -63,6 +66,12 @@
   </div>
 
   <div id="tab-kb" style="display:none">
+    <div class="card">
+      <h2>向量检索（BM25 + 向量混合）
+        <button class="small ghost" onclick="loadVectorStatus()">刷新</button>
+        <button class="small" onclick="kbReindex()">重建向量索引</button></h2>
+      <div id="vectorStatus" class="muted">加载中…</div>
+    </div>
     <div class="card">
       <h2>新增 FAQ</h2>
       <div class="grid cols-2">
@@ -87,11 +96,15 @@
     <div class="card">
       <h2>LLM 调用记录</h2>
       <div class="row" style="margin-bottom:10px">
-        <select id="llmStatus" onchange="loadLlm()" style="max-width:160px">
-          <option value="">全部</option><option value="OK">成功</option><option value="ERROR">失败</option>
+        <select id="llmStatus" onchange="loadLlm(1)" style="max-width:180px">
+          <option value="">全部</option><option value="OK">成功 OK</option>
+          <option value="ERROR">失败 ERROR</option><option value="FALLBACK">FAQ 降级</option>
+          <option value="BUDGET">预算降级</option><option value="ABORTED">断流</option>
+          <option value="CIRCUIT">熔断</option>
         </select>
       </div>
       <div id="llmList"></div>
+      <div id="llmPager"></div>
     </div>
   </div>
 
@@ -99,6 +112,7 @@
     <div class="card">
       <h2>租户订阅状态</h2>
       <div id="subList"></div>
+      <div id="subPager"></div>
       <div class="row" style="margin-top:12px">
         <input id="grantTenant" placeholder="租户 ID（如 TN1）" style="max-width:160px">
         <input id="grantDays" type="number" value="30" style="max-width:100px">
@@ -107,13 +121,19 @@
     </div>
     <div class="grid cols-2">
       <div class="card">
-        <h2>生成激活码</h2>
-        <div class="row">
+        <h2>激活码</h2>
+        <div class="row" style="margin-bottom:8px">
+          <select id="codeStatus" onchange="loadCodes(1)" style="max-width:140px">
+            <option value="">全部状态</option><option value="UNUSED">未使用</option><option value="USED">已使用</option>
+          </select>
+        </div>
+        <div id="codeList"></div>
+        <div id="codePager"></div>
+        <div class="row" style="margin-top:12px">
           <input id="codeDays" type="number" value="30" style="max-width:100px">
           <input id="codeCount" type="number" value="3" style="max-width:100px">
-          <button onclick="genCodes()">生成</button>
+          <button onclick="genCodes()">生成激活码</button>
         </div>
-        <div id="codeList" style="margin-top:10px"></div>
       </div>
       <div class="card">
         <h2>新建租户</h2>
@@ -124,7 +144,65 @@
         </div>
         <h2 style="margin-top:14px">订阅支付单</h2>
         <div id="subOrders"></div>
+        <div id="orderPager"></div>
       </div>
+    </div>
+  </div>
+
+  <div id="tab-audit" style="display:none">
+    <div class="card">
+      <h2>管理操作审计</h2>
+      <div class="row" style="margin-bottom:10px">
+        <input id="auditAction" placeholder="按动作过滤（如 KB_UPDATE）" style="max-width:260px"
+               onkeydown="if(event.key==='Enter')loadAudit(1)">
+        <button class="small" onclick="loadAudit(1)">查询</button>
+      </div>
+      <div id="auditList"></div>
+      <div id="auditPager"></div>
+    </div>
+    <div class="card">
+      <h2>坏例队列</h2>
+      <div class="muted" style="margin-bottom:6px">差评 / 智能助手降级的会话；点开查看上下文，再到 FAQ 知识库页签改进条目。</div>
+      <div id="badList"></div>
+      <div id="badPager"></div>
+      <div id="badDetail"></div>
+    </div>
+    <div class="card">
+      <h2>主动服务事件</h2>
+      <div id="evtList"></div>
+      <div id="evtPager"></div>
+    </div>
+  </div>
+
+  <div id="tab-open" style="display:none">
+    <div class="card">
+      <h2>开放 API 凭证（X-Open-Key）</h2>
+      <div class="row" style="margin-bottom:10px">
+        <input id="keyTenant" placeholder="按租户编码过滤（如 ride-pro）" style="max-width:240px"
+               onkeydown="if(event.key==='Enter')loadKeys(1)">
+        <button class="small" onclick="loadKeys(1)">查询</button>
+        <span class="spacer"></span>
+        <input id="keyGenTenant" placeholder="租户编码" style="max-width:160px">
+        <button class="small" onclick="genKey()">生成凭证</button>
+      </div>
+      <div id="keyNew"></div>
+      <div id="keyList"></div>
+      <div id="keyPager"></div>
+    </div>
+    <div class="card">
+      <h2>月度账单</h2>
+      <div class="row" style="margin-bottom:10px">
+        <input id="invTenant" placeholder="租户编码（可选）" style="max-width:180px">
+        <input id="invPeriod" placeholder="账期 YYYY-MM（可选）" style="max-width:180px"
+               onkeydown="if(event.key==='Enter')loadInv(1)">
+        <button class="small" onclick="loadInv(1)">查询</button>
+        <span class="spacer"></span>
+        <input id="invGenTenant" placeholder="租户编码" style="max-width:160px">
+        <input id="invGenPeriod" placeholder="YYYY-MM" style="max-width:120px">
+        <button class="small" onclick="genInvoice()">出账</button>
+      </div>
+      <div id="invList"></div>
+      <div id="invPager"></div>
     </div>
   </div>
 </div>
@@ -135,10 +213,12 @@ function saveToken() {
   if (t) localStorage.setItem(CS.tokenKey, t);
 }
 
+const TABS = ['overview', 'sessions', 'kb', 'llm', 'sub', 'audit', 'open'];
+
 function switchTab(name) {
   document.querySelectorAll('.tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === name));
-  ['overview', 'sessions', 'kb', 'llm', 'sub'].forEach(t =>
+  TABS.forEach(t =>
     document.getElementById('tab-' + t).style.display = t === name ? '' : 'none');
   refresh();
 }
@@ -150,7 +230,9 @@ async function refresh() {
     if (active === 'sessions') await loadSessions();
     if (active === 'kb') await loadKb();
     if (active === 'llm') await loadLlm();
-    if (active === 'sub') await loadSub();
+    if (active === 'sub') await Promise.all([loadSubs(), loadCodes(), loadOrders()]);
+    if (active === 'audit') await Promise.all([loadAudit(), loadBad(), loadEvents()]);
+    if (active === 'open') await Promise.all([loadKeys(), loadInv()]);
   } catch (e) { CS.toast(e.message, true); }
 }
 
@@ -190,9 +272,14 @@ async function loadOverview() {
     : '<div class="empty">暂无知识库条目</div>';
 }
 
-async function loadSessions() {
+// ---- 会话审计 ----
+let sessPage = 1;
+const SESS_SIZE = 10;
+
+async function loadSessions(page = sessPage) {
+  sessPage = page;
   const status = document.getElementById('sessStatus').value;
-  const d = await CS.get('/api/admin/sessions?size=30' + (status ? '&status=' + status : ''));
+  const d = await CS.get(`/api/admin/sessions?page=${page}&size=${SESS_SIZE}` + (status ? '&status=' + status : ''));
   document.getElementById('sessionList').innerHTML = d.list.length ?
     '<table><tr><th>会话</th><th>用户</th><th>身份</th><th>租户</th><th>意图</th><th>状态</th><th>创建</th></tr>' +
     d.list.map(s => `<tr style="cursor:pointer" onclick="showMsgs('${s.id}')">
@@ -200,6 +287,7 @@ async function loadSessions() {
       <td>${CS.esc(s.tenantCode)}</td><td>${CS.esc(s.intent || '-')}</td>
       <td>${CS.statusBadge(s.status)}</td><td class="muted">${CS.time(s.createdAt)}</td></tr>`).join('') + '</table>'
     : '<div class="empty">暂无会话</div>';
+  CS.pager('sessPager', d.total, page, SESS_SIZE, 'loadSessions');
 }
 
 async function showMsgs(id) {
@@ -215,10 +303,33 @@ async function showMsgs(id) {
         `<a href="${CS.esc(u)}" target="_blank"><img class="thumb" src="${CS.esc(u)}"></a>`).join('') + '</span>' : ''}</p>`).join('') || '<div class="empty">暂无消息</div>';
 }
 
+// ---- FAQ 知识库 ----
 let kbCache = [];
 let editingKb = null;
 
+async function loadVectorStatus() {
+  const el = document.getElementById('vectorStatus');
+  try {
+    const d = await CS.get('/api/admin/kb/vector-status');
+    if (!d.enabled) { el.innerHTML = '<span class="badge gray">已关闭</span> 仅 BM25 检索（cs.vector.enabled=false）'; return; }
+    const ok = d.embeddingUp && d.qdrantUp;
+    el.innerHTML = `${ok ? '<span class="badge ok">混合检索生效</span>' : '<span class="badge warn">向量不可用，已降级 BM25</span>'}
+      Embedding ${d.embeddingUp ? '在线' : '离线'} · Qdrant ${d.qdrantUp ? '在线' : '离线'}
+      · 已索引 <b>${d.indexed}</b> / 启用条目 ${d.kbTotal}
+      · 模型 ${CS.esc(d.model || '-')}（${d.dim} 维）`;
+  } catch (e) { el.textContent = e.message; }
+}
+
+async function kbReindex() {
+  try {
+    const d = await CS.post('/api/admin/kb/reindex');
+    CS.toast('向量索引重建完成：' + d.indexed + ' 条');
+    loadVectorStatus();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
 async function loadKb() {
+  loadVectorStatus();
   const list = await CS.get('/api/admin/kb');
   kbCache = list;
   document.getElementById('kbCount').textContent = '共 ' + list.length + ' 条';
@@ -300,40 +411,68 @@ async function kbDelete(id) {
   catch (e) { CS.toast(e.message, true); }
 }
 
-async function loadLlm() {
+// ---- LLM 审计 ----
+let llmPage = 1;
+const LLM_SIZE = 20;
+
+async function loadLlm(page = llmPage) {
+  llmPage = page;
   const status = document.getElementById('llmStatus').value;
-  const list = await CS.get('/api/admin/llm-calls?size=30' + (status ? '&status=' + status : ''));
-  document.getElementById('llmList').innerHTML = list.length ?
+  const d = await CS.get(`/api/admin/llm-calls?page=${page}&size=${LLM_SIZE}` + (status ? '&status=' + status : ''));
+  document.getElementById('llmList').innerHTML = d.list.length ?
     '<table><tr><th>ID</th><th>会话</th><th>模型</th><th>提示版本</th><th>Tokens</th><th>耗时</th><th>状态</th><th>时间</th></tr>' +
-    list.map(c => `<tr><td class="mono">${c.id}</td><td class="mono">${CS.esc(c.sessionId || '-')}</td>
+    d.list.map(c => `<tr><td class="mono">${c.id}</td><td class="mono">${CS.esc(c.sessionId || '-')}</td>
       <td>${CS.esc(c.model || '-')}</td><td class="mono">${CS.esc(c.promptVersion || '-')}</td>
       <td>${(c.promptTokens || 0) + (c.completionTokens || 0)}</td>
       <td>${c.latencyMs || 0}ms</td>
       <td>${c.status === 'OK' ? '<span class="badge ok">OK</span>' : '<span class="badge err" title="' + CS.esc(c.error || '') + '">' + CS.esc(c.status) + '</span>'}</td>
       <td class="muted">${CS.time(c.createdAt)}</td></tr>`).join('') + '</table>'
     : '<div class="empty">暂无调用记录（未配置 LLM Key 时为 FAQ 模式）</div>';
+  CS.pager('llmPager', d.total, page, LLM_SIZE, 'loadLlm');
 }
 
-async function loadSub() {
-  const list = await CS.get('/api/admin/subscriptions');
-  document.getElementById('subList').innerHTML = '<table><tr><th>租户</th><th>编码</th><th>状态</th><th>订阅</th><th>到期</th><th>来源</th><th>操作</th></tr>' +
-    list.map(r => `<tr><td>${CS.esc(r.tenant.name)}</td><td class="mono">${CS.esc(r.tenant.code)}</td>
+// ---- 租户与订阅 ----
+let subPage = 1, codePage = 1, orderPage = 1;
+const SUB_SIZE = 10, CODE_SIZE = 10, ORDER_SIZE = 10;
+
+async function loadSubs(page = subPage) {
+  subPage = page;
+  const d = await CS.get(`/api/admin/subscriptions?page=${page}&size=${SUB_SIZE}`);
+  document.getElementById('subList').innerHTML = d.list.length ?
+    '<table><tr><th>租户</th><th>编码</th><th>状态</th><th>订阅</th><th>到期</th><th>来源</th><th>操作</th></tr>' +
+    d.list.map(r => `<tr><td>${CS.esc(r.tenant.name)}</td><td class="mono">${CS.esc(r.tenant.code)}</td>
       <td>${CS.statusBadge(r.tenant.status)}</td>
       <td>${r.subscribed ? '<span class="badge ok">已订阅</span>' : '<span class="badge gray">免费</span>'}</td>
       <td class="muted">${r.subscription ? CS.day(r.subscription.expireAt) : '-'}</td>
       <td class="muted">${r.subscription ? CS.esc(r.subscription.source) : '-'}</td>
       <td><button class="small ghost" onclick="freeze('${r.tenant.id}','${r.tenant.status === 'ACTIVE' ? 'FROZEN' : 'ACTIVE'}')">
-        ${r.tenant.status === 'ACTIVE' ? '冻结' : '解冻'}</button></td></tr>`).join('') + '</table>';
-  const codes = await CS.get('/api/admin/codes');
-  document.getElementById('codeList').innerHTML = codes.length ?
-    '<table><tr><th>激活码</th><th>天数</th><th>状态</th></tr>' + codes.slice(0, 20).map(c =>
-      `<tr><td class="mono">${c.code}</td><td>${c.days}</td><td>${CS.statusBadge(c.status)}</td></tr>`).join('') + '</table>'
+        ${r.tenant.status === 'ACTIVE' ? '冻结' : '解冻'}</button></td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无租户</div>';
+  CS.pager('subPager', d.total, page, SUB_SIZE, 'loadSubs');
+}
+
+async function loadCodes(page = codePage) {
+  codePage = page;
+  const status = document.getElementById('codeStatus').value;
+  const d = await CS.get(`/api/admin/codes?page=${page}&size=${CODE_SIZE}` + (status ? '&status=' + status : ''));
+  document.getElementById('codeList').innerHTML = d.list.length ?
+    '<table><tr><th>激活码</th><th>天数</th><th>套餐</th><th>状态</th><th>兑换租户</th></tr>' +
+    d.list.map(c => `<tr><td class="mono">${c.code}</td><td>${c.days}</td>
+      <td class="mono">${CS.esc(c.planCode || '-')}</td><td>${CS.statusBadge(c.status)}</td>
+      <td class="mono">${CS.esc(c.usedByTenant || '-')}</td></tr>`).join('') + '</table>'
     : '<div class="empty">暂无激活码</div>';
-  const orders = await CS.get('/api/admin/sub-orders');
-  document.getElementById('subOrders').innerHTML = orders.length ?
-    '<table><tr><th>单号</th><th>金额</th><th>状态</th></tr>' + orders.slice(0, 10).map(o =>
-      `<tr><td class="mono">${o.id}</td><td>¥${CS.yuan(o.amount)}</td><td>${CS.statusBadge(o.status)}</td></tr>`).join('') + '</table>'
+  CS.pager('codePager', d.total, page, CODE_SIZE, 'loadCodes');
+}
+
+async function loadOrders(page = orderPage) {
+  orderPage = page;
+  const d = await CS.get(`/api/admin/sub-orders?page=${page}&size=${ORDER_SIZE}`);
+  document.getElementById('subOrders').innerHTML = d.list.length ?
+    '<table><tr><th>单号</th><th>金额</th><th>状态</th><th>创建</th></tr>' +
+    d.list.map(o => `<tr><td class="mono">${o.id}</td><td>¥${CS.yuan(o.amount)}</td>
+      <td>${CS.statusBadge(o.status)}</td><td class="muted">${CS.time(o.createdAt)}</td></tr>`).join('') + '</table>'
     : '<div class="empty">暂无支付单</div>';
+  CS.pager('orderPager', d.total, page, ORDER_SIZE, 'loadOrders');
 }
 
 async function grant() {
@@ -343,7 +482,7 @@ async function grant() {
   try {
     const sub = await CS.post('/api/admin/subscriptions/grant', { tenantId, days });
     CS.toast('已开通，到期 ' + CS.day(sub.expireAt));
-    loadSub();
+    loadSubs();
   } catch (e) { CS.toast(e.message, true); }
 }
 
@@ -354,7 +493,7 @@ async function genCodes() {
       count: Number(document.getElementById('codeCount').value),
     });
     CS.toast('已生成 ' + codes.length + ' 个激活码');
-    loadSub();
+    loadCodes(1);
   } catch (e) { CS.toast(e.message, true); }
 }
 
@@ -365,7 +504,7 @@ async function createTenant() {
       name: document.getElementById('newName').value.trim(),
     });
     CS.toast('租户已创建');
-    loadSub();
+    loadSubs();
   } catch (e) { CS.toast(e.message, true); }
 }
 
@@ -373,7 +512,133 @@ async function freeze(id, status) {
   try {
     await CS.post(`/api/admin/tenants/${id}/status`, { status });
     CS.toast(status === 'FROZEN' ? '已冻结' : '已解冻');
-    loadSub();
+    loadSubs();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+// ---- 审计与坏例 ----
+let auditPage = 1, badPage = 1, evtPage = 1;
+const AUDIT_SIZE = 20, BAD_SIZE = 10, EVT_SIZE = 20;
+
+async function loadAudit(page = auditPage) {
+  auditPage = page;
+  const action = document.getElementById('auditAction').value.trim();
+  const d = await CS.get(`/api/admin/audit-log?page=${page}&size=${AUDIT_SIZE}` + (action ? '&action=' + encodeURIComponent(action) : ''));
+  document.getElementById('auditList').innerHTML = d.list.length ?
+    '<table><tr><th>ID</th><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>详情</th></tr>' +
+    d.list.map(a => `<tr><td class="mono">${a.id}</td><td class="muted">${CS.time(a.createdAt)}</td>
+      <td>${CS.esc(a.actor)}</td><td class="mono">${CS.esc(a.action)}</td>
+      <td class="mono">${CS.esc(a.target || '-')}</td><td>${CS.esc(a.detail || '-')}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无审计记录</div>';
+  CS.pager('auditPager', d.total, page, AUDIT_SIZE, 'loadAudit');
+}
+
+async function loadBad(page = badPage) {
+  badPage = page;
+  const d = await CS.get(`/api/admin/badcases?page=${page}&size=${BAD_SIZE}`);
+  document.getElementById('badList').innerHTML = d.list.length ?
+    '<table><tr><th>会话</th><th>用户</th><th>租户</th><th>原因</th><th>最近提问</th></tr>' +
+    d.list.map(b => `<tr style="cursor:pointer" onclick="showBadMsgs('${b.session.id}')">
+      <td class="mono">${b.session.id}</td><td>${CS.esc(b.session.userName || b.session.userId)}</td>
+      <td>${CS.esc(b.session.tenantCode)}</td>
+      <td>${b.reasons.map(r => '<span class="badge warn">' + CS.esc(r) + '</span>').join(' ')}</td>
+      <td>${CS.esc(b.lastUser || '')}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无坏例</div>';
+  CS.pager('badPager', d.total, page, BAD_SIZE, 'loadBad');
+}
+
+async function showBadMsgs(id) {
+  try {
+    const list = await CS.get('/api/admin/sessions/' + id + '/messages');
+    document.getElementById('badDetail').innerHTML =
+      `<h3 style="margin-top:12px">会话上下文 <span class="mono">${id}</span></h3>
+      <div style="max-height:300px;overflow:auto">` +
+      (list.length ? list.map(m => `<p style="font-size:13px;margin-bottom:8px">
+        <b>${m.role === 'USER' ? '用户' : '机器人'}</b>
+        <span class="muted">${CS.time(m.createdAt)}</span>
+        ${m.kbRefs ? '<span class="mono muted"> refs:' + CS.esc(m.kbRefs) + '</span>' : ''}
+        <br>${CS.esc(m.content || '')}</p>`).join('')
+        : '<div class="empty">暂无消息</div>') + '</div>';
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function loadEvents(page = evtPage) {
+  evtPage = page;
+  const d = await CS.get(`/api/admin/proactive-events?page=${page}&size=${EVT_SIZE}`);
+  document.getElementById('evtList').innerHTML = d.list.length ?
+    '<table><tr><th>事件键</th><th>租户</th><th>用户</th><th>会话</th><th>状态</th><th>内容</th><th>时间</th></tr>' +
+    d.list.map(e => `<tr><td class="mono">${CS.esc(e.eventKey)}</td><td class="mono">${CS.esc(e.tenantId)}</td>
+      <td>${CS.esc(e.userId)}</td><td class="mono">${CS.esc(e.sessionId || '-')}</td>
+      <td>${CS.statusBadge(e.status)}</td><td>${CS.esc((e.payload || '').slice(0, 60))}</td>
+      <td class="muted">${CS.time(e.createdAt)}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无主动服务事件</div>';
+  CS.pager('evtPager', d.total, page, EVT_SIZE, 'loadEvents');
+}
+
+// ---- 开放与账单 ----
+let keyPage = 1, invPage = 1;
+const KEY_SIZE = 10, INV_SIZE = 10;
+
+async function loadKeys(page = keyPage) {
+  keyPage = page;
+  const tc = document.getElementById('keyTenant').value.trim();
+  const d = await CS.get(`/api/admin/open-keys?page=${page}&size=${KEY_SIZE}` + (tc ? '&tenantCode=' + encodeURIComponent(tc) : ''));
+  document.getElementById('keyList').innerHTML = d.list.length ?
+    '<table><tr><th>API Key</th><th>租户</th><th>状态</th><th>创建</th><th>操作</th></tr>' +
+    d.list.map(k => `<tr><td class="mono">${CS.esc(k.apiKey)}</td><td class="mono">${CS.esc(k.tenantId)}</td>
+      <td>${k.status === 'ACTIVE' ? '<span class="badge ok">有效</span>' : '<span class="badge gray">已吊销</span>'}</td>
+      <td class="muted">${CS.time(k.createdAt)}</td>
+      <td>${k.status === 'ACTIVE' ? `<button class="small danger" onclick="revokeKey('${CS.esc(k.apiKey)}')">吊销</button>` : '-'}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无凭证</div>';
+  CS.pager('keyPager', d.total, page, KEY_SIZE, 'loadKeys');
+}
+
+async function genKey() {
+  const tenantCode = document.getElementById('keyGenTenant').value.trim();
+  if (!tenantCode) return CS.toast('请填写租户编码', true);
+  try {
+    const k = await CS.post('/api/admin/open-keys', { tenantCode });
+    document.getElementById('keyNew').innerHTML =
+      `<p style="font-size:13px;margin-bottom:8px">新凭证（secret 仅此次展示，请妥善保存）：<br>
+      <span class="mono">X-Open-Key: ${CS.esc(k.apiKey)}</span><br>
+      <span class="mono">secret: ${CS.esc(k.secret)}</span></p>`;
+    CS.toast('凭证已生成');
+    loadKeys(1);
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function revokeKey(apiKey) {
+  if (!confirm('确认吊销凭证 ' + apiKey + '？吊销后该 Key 立即失效。')) return;
+  try {
+    await CS.post(`/api/admin/open-keys/${apiKey}/revoke`);
+    CS.toast('已吊销');
+    loadKeys();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function loadInv(page = invPage) {
+  invPage = page;
+  const tc = document.getElementById('invTenant').value.trim();
+  const p = document.getElementById('invPeriod').value.trim();
+  const d = await CS.get(`/api/admin/invoices?page=${page}&size=${INV_SIZE}` +
+    (tc ? '&tenantCode=' + encodeURIComponent(tc) : '') + (p ? '&period=' + encodeURIComponent(p) : ''));
+  document.getElementById('invList').innerHTML = d.list.length ?
+    '<table><tr><th>账单号</th><th>租户</th><th>账期</th><th>Tokens</th><th>调用</th><th>金额</th><th>套餐</th></tr>' +
+    d.list.map(i => `<tr><td class="mono">${CS.esc(i.id)}</td><td class="mono">${CS.esc(i.tenantId)}</td>
+      <td>${CS.esc(i.period)}</td><td>${(i.promptTokens || 0) + (i.completTokens || 0)}</td>
+      <td>${i.calls}</td><td>¥${CS.yuan(i.amount)}</td><td class="mono">${CS.esc(i.planCode || '-')}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无账单</div>';
+  CS.pager('invPager', d.total, page, INV_SIZE, 'loadInv');
+}
+
+async function genInvoice() {
+  const tenantCode = document.getElementById('invGenTenant').value.trim();
+  const period = document.getElementById('invGenPeriod').value.trim();
+  if (!tenantCode || !period) return CS.toast('请填写租户编码与账期', true);
+  try {
+    const inv = await CS.post('/api/admin/invoices/generate', { tenantCode, period });
+    CS.toast('已出账 ¥' + CS.yuan(inv.amount));
+    loadInv(1);
   } catch (e) { CS.toast(e.message, true); }
 }
 

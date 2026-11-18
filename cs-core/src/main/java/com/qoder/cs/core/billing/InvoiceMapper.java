@@ -25,4 +25,16 @@ public interface InvoiceMapper {
 
     @Select("SELECT * FROM cs_invoice ORDER BY period DESC, tenant_id")
     List<InvoiceDTO> listAll();
+
+    @Select("<script>SELECT COUNT(*) FROM cs_invoice " +
+            "<where><if test='tenantId != null'>tenant_id = #{tenantId}</if> " +
+            "<if test='period != null'>AND period = #{period}</if></where></script>")
+    long count(@Param("tenantId") String tenantId, @Param("period") String period);
+
+    @Select("<script>SELECT * FROM cs_invoice " +
+            "<where><if test='tenantId != null'>tenant_id = #{tenantId}</if> " +
+            "<if test='period != null'>AND period = #{period}</if></where> " +
+            "ORDER BY period DESC, tenant_id LIMIT #{size} OFFSET #{offset}</script>")
+    List<InvoiceDTO> page(@Param("tenantId") String tenantId, @Param("period") String period,
+                          @Param("offset") int offset, @Param("size") int size);
 }

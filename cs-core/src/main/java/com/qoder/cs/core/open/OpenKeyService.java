@@ -10,7 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.security.SecureRandom;
-import java.util.List;
 
 /**
  * 开放 API 凭证：admin 为租户生成/吊销 X-Open-Key，租户凭此自助查询本租户数据，
@@ -49,12 +48,16 @@ public class OpenKeyService {
         log.info("开放凭证吊销 key={}", apiKey);
     }
 
-    public List<OpenKeyDTO> list(String tenantCode) {
-        if (tenantCode == null || tenantCode.isBlank()) {
-            return keys.listAll();
+    public java.util.Map<String, Object> query(String tenantCode, int page, int size) {
+        String tenantId = null;
+        if (tenantCode != null && !tenantCode.isBlank()) {
+            tenantId = subscriptions.requireTenant(tenantCode).getId();
         }
-        TenantDTO t = subscriptions.requireTenant(tenantCode);
-        return keys.listByTenant(t.getId());
+        int limit = Math.min(size, 100);
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("total", keys.count(tenantId));
+        out.put("list", keys.page(tenantId, (page - 1) * limit, limit));
+        return out;
     }
 
     /** 校验凭证并返回所属租户（冻结租户拒绝）。供 OpenKeyAuthFilter 调用。 */

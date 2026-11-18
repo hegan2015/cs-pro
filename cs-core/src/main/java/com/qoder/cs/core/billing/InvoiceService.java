@@ -83,6 +83,19 @@ public class InvoiceService {
         return invoices.listAll();
     }
 
+    public java.util.Map<String, Object> query(String tenantCode, String period, int page, int size) {
+        String tenantId = null;
+        if (tenantCode != null && !tenantCode.isBlank()) {
+            tenantId = subscriptions.requireTenant(tenantCode).getId();
+        }
+        String p = period == null || period.isBlank() ? null : parsePeriod(period).format(PERIOD);
+        int limit = Math.min(size, 100);
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("total", invoices.count(tenantId, p));
+        out.put("list", invoices.page(tenantId, p, (page - 1) * limit, limit));
+        return out;
+    }
+
     private static YearMonth parsePeriod(String period) {
         if (period == null || !period.matches("\\d{4}-\\d{2}")) {
             throw BizException.param("period 需为 YYYY-MM");

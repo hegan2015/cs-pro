@@ -10,3 +10,4 @@ config/payment-pro.properties
 *.tmp
 .DS_Store
 tools/out/
+deploy/embedding/model/

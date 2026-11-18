@@ -18,6 +18,8 @@ cs:
     daily-quota: 5
   chat:
     tenant-concurrency: 1
+  vector:
+    enabled: false
   proactive:
     enabled: false
   uploads:

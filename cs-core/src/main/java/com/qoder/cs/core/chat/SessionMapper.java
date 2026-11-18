@@ -54,12 +54,17 @@ public interface SessionMapper {
     long countByTenant(@Param("tenantCode") String tenantCode, @Param("status") String status);
 
     /** 坏例候选：会话差评 / 机器人消息差评 / LLM 降级（FALLBACK/BUDGET/ABORTED） */
-    @Select("SELECT DISTINCT s.* FROM cs_session s WHERE " +
+    String BADCASE_WHERE =
             "EXISTS (SELECT 1 FROM cs_rating r WHERE r.target_type = 'SESSION' AND r.target_id = s.id AND r.score <= 2) " +
             "OR EXISTS (SELECT 1 FROM cs_rating r JOIN cs_message m ON r.target_id = m.id " +
             "  WHERE r.target_type = 'MESSAGE' AND m.session_id = s.id AND r.score <= 2) " +
             "OR EXISTS (SELECT 1 FROM cs_llm_call c WHERE c.session_id = s.id " +
-            "  AND c.status IN ('FALLBACK','BUDGET','ABORTED')) " +
-            "ORDER BY s.created_at DESC LIMIT #{limit}")
-    List<SessionDTO> badcases(@Param("limit") int limit);
+            "  AND c.status IN ('FALLBACK','BUDGET','ABORTED'))";
+
+    @Select("SELECT COUNT(DISTINCT s.id) FROM cs_session s WHERE " + BADCASE_WHERE)
+    long badcasesCount();
+
+    @Select("SELECT DISTINCT s.* FROM cs_session s WHERE " + BADCASE_WHERE +
+            " ORDER BY s.created_at DESC LIMIT #{limit} OFFSET #{offset}")
+    List<SessionDTO> badcases(@Param("offset") int offset, @Param("limit") int limit);
 }

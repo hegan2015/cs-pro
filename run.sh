@@ -1,6 +1,7 @@
 #!/bin/bash
 # cs-pro 一键编译并启动（单进程：REST + SSE + H5，端口 8096）。
-# 零外部依赖：ride-pro/payment-pro 未启动时自动降级（FAQ 模式 / 禁用对应查询）。
+# 默认 Docker MySQL（claim-shared 共享栈）；CS_DB_MODE=h2 可切回零依赖 H2 模式。
+# ride-pro/payment-pro 未启动时自动降级（FAQ 模式 / 禁用对应查询）。
 set -e
 cd "$(dirname "$0")"
 
@@ -17,7 +18,20 @@ PORT="${CS_PORT:-8096}"
 PIDF="run/cs-gateway-$PORT.pid"
 LOGF="logs/cs-gateway-$PORT.log"
 PROFILES=()
-[ "${CS_DB_MODE:-h2}" = "mysql" ] && PROFILES+=(mysql)
+DB_MODE="${CS_DB_MODE:-mysql}"
+if [ "$DB_MODE" = "mysql" ]; then
+  PROFILES+=(mysql)
+  if ! (exec 3<>/dev/tcp/127.0.0.1/3306) 2>/dev/null; then
+    echo "!! MySQL(127.0.0.1:3306) 不可达。请先启动共享中间件栈："
+    echo "   docker compose -f ../ops-pro/deploy/middleware-compose.yml --env-file ~/.config/claim-shared/env up -d"
+    echo "   或改用零依赖 H2 模式：CS_DB_MODE=h2 ./run.sh"
+    exit 1
+  fi
+fi
+if [ "${CS_VECTOR_ENABLED:-true}" = "true" ] && ! (exec 3<>/dev/tcp/127.0.0.1/6333) 2>/dev/null; then
+  echo "==> 提示：Qdrant(6333) 不可达，向量检索将降级纯 BM25。启用混合检索："
+  echo "   docker compose -f deploy/vector-compose.yml up -d --build"
+fi
 [ "${CS_MQ_ENABLED:-false}" = "true" ] && PROFILES+=(mq)
 PROFILE_ARGS=()
 if [ ${#PROFILES[@]} -gt 0 ]; then
