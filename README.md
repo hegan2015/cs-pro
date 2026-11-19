@@ -80,7 +80,7 @@ Maven 六模块（单运行进程 cs-gateway，可多实例）：
 中文 n-gram 倒排 + BM25 打分 + 12 组同义词扩展，Top3 注入 system prompt；KB 变更即重建索引。**混合检索（2026-11-18 用户拍板引入向量库）**：Qdrant 单容器（共享栈 claim-shared，6333）+ 本地 ONNX Embedding 容器（cs-embedding，8100，bge-small-zh-v1.5 int8，512 维，模型烘进镜像），BM25 与向量双榜 **RRF 融合**（k=60）；FAQ 直答双阈值（BM25≥1.0 或 cosine≥0.65，后者按 int8 模型实测校准：同主题改写 0.66~0.81、跨主题≤0.50）。**旁路降级**：任一容器不可达→纯 BM25，失败熔断 30s；启动自动补建索引，管理台可一键重建（`POST /api/admin/kb/reindex`）与状态查看（`GET /api/admin/kb/vector-status`）；`CS_VECTOR_ENABLED=false` 整体关闭。**运营闭环**：每次改写前旧版快照（cs_kb_revision）支持一键回滚；差评/降级会话自动入**坏例队列**；**引用解决率**统计（cited_count/cited_resolved_count）回答"哪条 FAQ 真正管用"。
 
 ### 4.4 工单生命周期
-`OPEN → PROCESSING → RESOLVED → CLOSED`（分派即进入 PROCESSING；用户确认或 7 天自动关闭），OPEN/PROCESSING 可本人撤单 CANCELLED。全部流转 CAS；建单幂等 `request_id` 唯一键；携带会话快照/关联订单/分类/优先级/来源/**图片附件**；满意度 1–5 星（PK 防重）。
+`OPEN → PROCESSING → RESOLVED → CLOSED`（分派即进入 PROCESSING；用户确认或 7 天自动关闭），OPEN/PROCESSING 可本人撤单 CANCELLED。全部流转 CAS；建单幂等 `request_id` 唯一键；携带会话快照/关联订单/分类/优先级/来源/**图片附件**；满意度 1–5 星（PK 防重）。**ride-pro 接入**：开放收单口 `POST /api/open/tickets`（X-Open-Key，source 缺省 ride-pro，携带用户昵称/问题描述/订单号），管理端「工单」页签处置，见 §7.1。
 
 ### 4.5 多模态 / 多语言 / 主动服务
 - **图片**：`POST /api/uploads`（≤5MB）→ 附图消息走视觉模型（parts=[text, image_url]），工单带附件、工作台缩略图。
@@ -122,7 +122,7 @@ REST 契约详见 DESIGN §6。成功 body 为 data，失败 Result `{code, mess
 
 - **用户端**：会话/消息/SSE 流/评价/工单/KB 检索/订阅/上传。**会话凭证**：建会话一次性下发 accessToken，此后会话端点须 `X-Session-Token`（SSE 走 `?token=`），详情/列表剥离 token，老会话兼容放行。
 - **管理端**（`/api/admin/*`，X-Admin-Token，支持逗号分隔多令牌轮换）：总览/趋势/会话审计/接管/工单池/FAQ 管理+版本回滚+引用统计/坏例/主动事件/LLM 审计/租户/激活码/订阅单/open-key/套餐/账单/**管理审计日志**/**metrics**/**健康**。
-- **开放 API**（`/api/open/*`，X-Open-Key 租户凭证，无效 401/冻结 403/可吊销）：usage（订阅+今日 token）/ sessions（分页，剥离敏感字段）/ invoices。
+- **开放 API**（`/api/open/*`，X-Open-Key 租户凭证，无效 401/冻结 403/可吊销）：usage（订阅+今日 token）/ sessions（分页，剥离敏感字段）/ invoices / **tickets 收单与回查（ride-pro 工单接入，见 §7.1）**。
 
 前端五页面（零构建 H5，网关静态托管，共享 common.css/common.js）：
 
@@ -130,9 +130,27 @@ REST 契约详见 DESIGN §6。成功 body 为 data，失败 Result `{code, mess
 |---|---|
 | subscription.html | 订阅状态卡 + 套餐权益对比 + 激活码兑换 + 支付开通（payEnabled 时） |
 | chat.html | 身份选择 + 订阅状态条 + SSE 打字机对话 + 引用来源 + 图片上传 + 一键建单 + 转人工 + 满意度 |
-| agent.html | 工单池筛选分页 + 详情抽屉（会话快照/时间线/附件缩略图）+ 分派/解决 + 人工接管会话服务 |
-| admin.html | 7 页签全列表真分页：运营总览 + 会话审计 + FAQ 管理（版本/回滚/引用率）+ LLM 审计（6 状态）+ 租户/激活码/订阅单 + 管理审计/坏例/主动事件 + open-key/账单 |
+| agent.html | 工单池筛选分页 + 详情抽屉（会话快照/时间线/附件缩略图）+ 分派/解决 + 人工接管会话服务；**ride-pro 来源徽标 + 订单号深链**（新页签跳 ride 管理端 `?order=<orderId>`） |
+| admin.html | 8 页签全列表真分页：运营总览 + 会话审计 + **工单（status/category/source/关键字筛选 + 详情抽屉 + 指派/解决/关闭/备注）** + FAQ 管理（版本/回滚/引用率）+ LLM 审计（6 状态）+ 租户/激活码/订阅单 + 管理审计/坏例/主动事件 + open-key/账单 |
 | health.html | 组件巡检徽章（DB/MQ/LLM/上游/主动服务）5s 轮询 + Prometheus 指标预览 |
+
+### 7.1 ride-pro 工单接入（开放收单口）
+
+ride-pro 后端以租户凭证代用户提交客服工单并回查进度，cs-pro 侧零侵入对接（ride-pro 不改代码即可用 curl/HTTP 客户端接入）：
+
+- **鉴权**：复用开放 API `X-Open-Key`（管理端「开放与账单」页签或 `POST /api/admin/open-keys {tenantCode:"ride-pro"}` 生成；无效 401、租户冻结 403、吊销即失效）。
+- **收单**：`POST /api/open/tickets`，body `{requestId, userId, userName?, source?, category?, orderId?, title, description?, attachments?}`。`requestId` 幂等（唯一键，重复提交返回同一工单）；`source` 缺省 `ride-pro`；`category` 限 计价/支付/退款/提现/账号/投诉/其他（缺省 其他）；`title` 落 summary，`attachments` 为 `/uploads/` 相对路径逗号列表（≤3 张）。返回与用户端 `POST /api/tickets` 同构的 TicketDTO（`id` 即工单号，含 `status`）。
+- **回查**：`GET /api/open/tickets?userId=&status=&page=&size=`（{total,list} 分页）与 `GET /api/open/tickets/{id}`（工单 + 备注时间线），供 ride-pro 展示处理进度。
+- **处置**：管理端 admin.html「工单」页签筛选（含 source=ride-pro）+ 详情抽屉（来源徽标/订单深链/用户/描述/附件/备注时间线）+ 指派/解决/关闭/加备注；坐席端 agent.html 工单池同步展示 ride 上下文。状态机与既有工单一致（OPEN→PROCESSING→RESOLVED→CLOSED，CAS + 7 天自动关闭）。
+- **schema**：cs_ticket 增列 `user_name`/`description`（H2 幂等 ALTER 自动生效；MySQL 存量库按 db/schema-mysql.sql 注释手动 ALTER 一次）。
+
+```bash
+KEY=$(curl -s -X POST http://127.0.0.1:8096/api/admin/open-keys -H 'X-Admin-Token: cs-admin' \
+  -H 'Content-Type: application/json' -d '{"tenantCode":"ride-pro"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["apiKey"])')
+curl -s -X POST http://127.0.0.1:8096/api/open/tickets -H "X-Open-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"requestId":"RIDE-T-001","userId":"P1001","userName":"张三","category":"投诉","orderId":"O20261119001","title":"司机绕路投诉","description":"行程明显绕路，要求核查计价"}'
+curl -s "http://127.0.0.1:8096/api/open/tickets?userId=P1001" -H "X-Open-Key: $KEY"
+```
 
 ## 8. 安全与正确性要点
 

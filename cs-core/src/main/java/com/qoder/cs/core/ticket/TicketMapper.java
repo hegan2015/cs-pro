@@ -9,8 +9,8 @@ import java.util.List;
 public interface TicketMapper {
 
 
-    @Insert("INSERT INTO cs_ticket(id, session_id, user_id, category, priority, summary, order_id, status, assignee, request_id, source, attachments, created_at) " +
-            "VALUES(#{id}, #{sessionId}, #{userId}, #{category}, #{priority}, #{summary}, #{orderId}, 'OPEN', #{assignee}, #{requestId}, #{source}, #{attachments}, #{createdAt})")
+    @Insert("INSERT INTO cs_ticket(id, session_id, user_id, user_name, category, priority, summary, description, order_id, status, assignee, request_id, source, attachments, created_at) " +
+            "VALUES(#{id}, #{sessionId}, #{userId}, #{userName}, #{category}, #{priority}, #{summary}, #{description}, #{orderId}, 'OPEN', #{assignee}, #{requestId}, #{source}, #{attachments}, #{createdAt})")
     int insert(TicketDTO ticket);
 
     @Select("SELECT * FROM cs_ticket WHERE id = #{id}")
@@ -23,15 +23,25 @@ public interface TicketMapper {
             "<if test='userId != null'>AND user_id = #{userId}</if> " +
             "<if test='status != null'>AND status = #{status}</if> " +
             "<if test='category != null'>AND category = #{category}</if> " +
+            "<if test='source != null'>AND source = #{source}</if> " +
+            "<if test='q != null'>AND (summary LIKE CONCAT('%', #{q}, '%') OR id LIKE CONCAT('%', #{q}, '%') " +
+            "OR order_id LIKE CONCAT('%', #{q}, '%') OR user_id LIKE CONCAT('%', #{q}, '%') " +
+            "OR user_name LIKE CONCAT('%', #{q}, '%'))</if> " +
             "ORDER BY created_at DESC LIMIT #{size} OFFSET #{offset}</script>")
     List<TicketDTO> query(@Param("userId") String userId, @Param("status") String status,
-                          @Param("category") String category, @Param("offset") int offset, @Param("size") int size);
+                          @Param("category") String category, @Param("source") String source,
+                          @Param("q") String q, @Param("offset") int offset, @Param("size") int size);
 
     @Select("<script>SELECT COUNT(*) FROM cs_ticket WHERE 1=1 " +
             "<if test='userId != null'>AND user_id = #{userId}</if> " +
             "<if test='status != null'>AND status = #{status}</if> " +
-            "<if test='category != null'>AND category = #{category}</if></script>")
-    long count(@Param("userId") String userId, @Param("status") String status, @Param("category") String category);
+            "<if test='category != null'>AND category = #{category}</if> " +
+            "<if test='source != null'>AND source = #{source}</if> " +
+            "<if test='q != null'>AND (summary LIKE CONCAT('%', #{q}, '%') OR id LIKE CONCAT('%', #{q}, '%') " +
+            "OR order_id LIKE CONCAT('%', #{q}, '%') OR user_id LIKE CONCAT('%', #{q}, '%') " +
+            "OR user_name LIKE CONCAT('%', #{q}, '%'))</if></script>")
+    long count(@Param("userId") String userId, @Param("status") String status,
+               @Param("category") String category, @Param("source") String source, @Param("q") String q);
 
     @Update("UPDATE cs_ticket SET status = #{to}, assignee = COALESCE(#{assignee}, assignee), " +
             "resolved_at = CASE WHEN #{to} = 'RESOLVED' THEN #{now} ELSE resolved_at END, " +

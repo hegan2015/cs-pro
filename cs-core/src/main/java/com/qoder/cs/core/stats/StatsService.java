@@ -62,7 +62,7 @@ public class StatsService {
         out.put("messages", messages);
 
         Map<String, Object> tickets = new LinkedHashMap<>();
-        tickets.put("total", ticketMapper.count(null, null, null));
+        tickets.put("total", ticketMapper.count(null, null, null, null, null));
         tickets.put("open", ticketMapper.countByStatus("OPEN"));
         tickets.put("processing", ticketMapper.countByStatus("PROCESSING"));
         tickets.put("resolved", ticketMapper.countByStatus("RESOLVED"));

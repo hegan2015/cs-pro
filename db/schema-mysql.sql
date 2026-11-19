@@ -49,9 +49,11 @@ CREATE TABLE IF NOT EXISTS cs_ticket (
     id          VARCHAR(32) PRIMARY KEY,
     session_id  VARCHAR(32),
     user_id     VARCHAR(32) NOT NULL,
+    user_name   VARCHAR(64),
     category    VARCHAR(32) NOT NULL,
     priority    VARCHAR(16) NOT NULL DEFAULT 'NORMAL',
     summary     VARCHAR(512) NOT NULL,
+    description LONGTEXT,
     order_id    VARCHAR(32),
     status      VARCHAR(16) NOT NULL,
     assignee    VARCHAR(64),
@@ -64,8 +66,15 @@ CREATE TABLE IF NOT EXISTS cs_ticket (
     closed_at   BIGINT,
     UNIQUE KEY uk_ticket_request (request_id),
     KEY idx_ticket_user (user_id),
-    KEY idx_ticket_status (status, created_at)
+    KEY idx_ticket_status (status, created_at),
+    KEY idx_ticket_source (source, created_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+-- ride-pro 工单接入增量：存量库（CREATE TABLE IF NOT EXISTS 不会补列）须手动执行一次：
+--   ALTER TABLE cs_ticket ADD COLUMN user_name VARCHAR(64) NULL AFTER user_id;
+--   ALTER TABLE cs_ticket ADD COLUMN description LONGTEXT NULL AFTER summary;
+--   ALTER TABLE cs_ticket ADD INDEX idx_ticket_source (source, created_at);
+-- H2 侧对应 schema.sql 尾部幂等 ALTER 自动生效。
 
 CREATE TABLE IF NOT EXISTS cs_ticket_note (
     id         VARCHAR(32) PRIMARY KEY,

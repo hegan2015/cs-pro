@@ -27,6 +27,7 @@
   <div class="tabs">
     <button data-tab="overview" class="active" onclick="switchTab('overview')">运营总览</button>
     <button data-tab="sessions" onclick="switchTab('sessions')">会话审计</button>
+    <button data-tab="tickets" onclick="switchTab('tickets')">工单</button>
     <button data-tab="kb" onclick="switchTab('kb')">FAQ 知识库</button>
     <button data-tab="llm" onclick="switchTab('llm')">LLM 审计</button>
     <button data-tab="sub" onclick="switchTab('sub')">租户与订阅</button>
@@ -62,6 +63,31 @@
     <div class="card" id="sessMsgCard" style="display:none">
       <h2>会话消息 <span class="mono" id="sessMsgId"></span></h2>
       <div id="sessMsgs"></div>
+    </div>
+  </div>
+
+  <div id="tab-tickets" style="display:none">
+    <div class="card">
+      <h2>工单池 <span class="muted" id="tkTotal"></span></h2>
+      <div class="row" style="margin-bottom:10px">
+        <select id="tkStatus" onchange="loadTickets(1)" style="max-width:130px">
+          <option value="">全部状态</option><option value="OPEN">待处理</option><option value="PROCESSING">处理中</option>
+          <option value="RESOLVED">已解决</option><option value="CLOSED">已关闭</option><option value="CANCELLED">已取消</option>
+        </select>
+        <select id="tkCategory" onchange="loadTickets(1)" style="max-width:110px">
+          <option value="">全部分类</option><option>计价</option><option>支付</option><option>退款</option>
+          <option>提现</option><option>账号</option><option>投诉</option><option>其他</option>
+        </select>
+        <select id="tkSource" onchange="loadTickets(1)" style="max-width:150px">
+          <option value="">全部来源</option><option value="ride-pro">ride-pro</option>
+          <option value="USER">用户 USER</option><option value="BOT">机器人 BOT</option><option value="AGENT">坐席 AGENT</option>
+        </select>
+        <input id="tkQ" placeholder="关键字：摘要/工单号/订单号/用户" style="max-width:250px"
+               onkeydown="if(event.key==='Enter')loadTickets(1)">
+        <button class="small" onclick="loadTickets(1)">查询</button>
+      </div>
+      <div id="ticketList"></div>
+      <div id="tkPager"></div>
     </div>
   </div>
 
@@ -206,6 +232,11 @@
     </div>
   </div>
 </div>
+<div id="tkDrawerMask" class="drawer-mask" style="display:none" onclick="closeTicketDrawer()"></div>
+<div id="tkDrawer" class="drawer" style="display:none">
+  <button class="close-x" onclick="closeTicketDrawer()" title="关闭">×</button>
+  <div id="tkDrawerBody"></div>
+</div>
 <script src="common.js"></script>
 <script>
 function saveToken() {
@@ -213,7 +244,7 @@ function saveToken() {
   if (t) localStorage.setItem(CS.tokenKey, t);
 }
 
-const TABS = ['overview', 'sessions', 'kb', 'llm', 'sub', 'audit', 'open'];
+const TABS = ['overview', 'sessions', 'tickets', 'kb', 'llm', 'sub', 'audit', 'open'];
 
 function switchTab(name) {
   document.querySelectorAll('.tabs button').forEach(b =>
@@ -228,6 +259,7 @@ async function refresh() {
   try {
     if (active === 'overview') await loadOverview();
     if (active === 'sessions') await loadSessions();
+    if (active === 'tickets') await loadTickets();
     if (active === 'kb') await loadKb();
     if (active === 'llm') await loadLlm();
     if (active === 'sub') await Promise.all([loadSubs(), loadCodes(), loadOrders()]);
@@ -641,6 +673,133 @@ async function genInvoice() {
     loadInv(1);
   } catch (e) { CS.toast(e.message, true); }
 }
+
+// ---- 工单页签（列表 + 详情抽屉 + 处置） ----
+let tkPage = 1, tkCurrent = null;
+const TK_SIZE = 10;
+
+async function loadTickets(page = tkPage) {
+  tkPage = page;
+  const status = document.getElementById('tkStatus').value;
+  const category = document.getElementById('tkCategory').value;
+  const source = document.getElementById('tkSource').value;
+  const q = document.getElementById('tkQ').value.trim();
+  const d = await CS.get(`/api/admin/tickets?page=${page}&size=${TK_SIZE}` +
+    (status ? '&status=' + status : '') + (category ? '&category=' + encodeURIComponent(category) : '') +
+    (source ? '&source=' + encodeURIComponent(source) : '') + (q ? '&q=' + encodeURIComponent(q) : ''));
+  document.getElementById('tkTotal').textContent = '共 ' + d.total + ' 条';
+  document.getElementById('ticketList').innerHTML = d.list.length ?
+    '<table><tr><th>工单</th><th>分类</th><th>摘要</th><th>用户</th><th>来源/订单</th><th>状态</th><th>创建</th></tr>' +
+    d.list.map(t => `<tr style="cursor:pointer" onclick="openTicketDrawer('${t.id}')">
+      <td class="mono">${t.id}${t.priority === 'URGENT' ? ' <span class="badge err">急</span>' : ''}</td>
+      <td>${CS.esc(t.category)}</td><td>${CS.esc(t.summary)}</td>
+      <td>${CS.esc(t.userName || t.userId)}</td>
+      <td>${CS.sourceBadge(t.source)}${CS.rideOrderLink(t) ? '<br>' + CS.rideOrderLink(t) : ''}</td>
+      <td>${CS.statusBadge(t.status)}</td><td class="muted">${CS.time(t.createdAt)}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">暂无工单</div>';
+  CS.pager('tkPager', d.total, page, TK_SIZE, 'loadTickets');
+}
+
+async function openTicketDrawer(id) {
+  try {
+    const d = await CS.get('/api/admin/tickets/' + id);
+    tkCurrent = d.ticket;
+    renderTicketDrawer(d);
+    document.getElementById('tkDrawerMask').style.display = '';
+    document.getElementById('tkDrawer').style.display = '';
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+function closeTicketDrawer() {
+  tkCurrent = null;
+  document.getElementById('tkDrawerMask').style.display = 'none';
+  document.getElementById('tkDrawer').style.display = 'none';
+}
+
+function renderTicketDrawer(d) {
+  const t = d.ticket;
+  const actions = [];
+  if (t.status === 'OPEN') {
+    actions.push(`<div class="row" style="margin-top:12px">
+      <input id="tkAssignee" placeholder="处理人姓名" style="flex:1">
+      <button onclick="tkAssign()">指派处理</button></div>`);
+  }
+  if (t.status === 'PROCESSING') {
+    actions.push(`<div style="margin-top:12px"><label>解决方案</label>
+      <textarea id="tkSolution" placeholder="填写处理结果"></textarea>
+      <button onclick="tkResolve()" style="margin-top:8px">标记已解决</button></div>`);
+  }
+  if (t.status === 'RESOLVED') {
+    actions.push(`<div style="margin-top:12px"><button class="ghost" onclick="tkClose()">关闭工单</button>
+      <span class="muted">（7 天未关闭将自动关闭）</span></div>`);
+  }
+  document.getElementById('tkDrawerBody').innerHTML = `
+    <h2>工单详情 <span class="mono">${t.id}</span></h2>
+    <div class="row">${CS.statusBadge(t.status)} <span class="badge">${CS.esc(t.category)}</span>
+      ${t.priority === 'URGENT' ? '<span class="badge err">紧急</span>' : ''} ${CS.sourceBadge(t.source)}</div>
+    <div class="kv" style="margin-top:10px">
+      <b>${CS.esc(t.summary)}</b><br>
+      用户：${CS.esc(t.userName || t.userId)}${t.userName ? '（' + CS.esc(t.userId) + '）' : ''}<br>
+      ${t.orderId ? '订单：' + (CS.rideOrderLink(t) || '<span class="mono">' + CS.esc(t.orderId) + '</span>') + '<br>' : ''}
+      ${t.sessionId ? '会话：<span class="mono">' + CS.esc(t.sessionId) + '</span><br>' : ''}
+      创建：${CS.time(t.createdAt)}${t.assignee ? ' · 处理人：' + CS.esc(t.assignee) : ''}
+      ${t.resolvedAt ? '<br>解决：' + CS.time(t.resolvedAt) : ''}${t.closedAt ? ' · 关闭：' + CS.time(t.closedAt) : ''}
+    </div>
+    ${t.source === 'ride-pro' ? '<p class="muted" style="margin-top:6px">ride-pro 来源工单：点订单号跳转打车管理端核对行程/支付上下文。</p>' : ''}
+    ${t.description ? '<h3>问题描述</h3><div class="desc-box">' + CS.esc(t.description) + '</div>' : ''}
+    ${t.attachments ? '<h3>附件</h3><div class="attach-strip">' + t.attachments.split(',').map(u =>
+      `<a href="${CS.esc(u)}" target="_blank"><img class="thumb" src="${CS.esc(u)}"></a>`).join('') + '</div>' : ''}
+    ${t.solution ? '<h3>解决方案</h3><div class="desc-box">' + CS.esc(t.solution) + '</div>' : ''}
+    ${actions.join('')}
+    <h3>备注时间线</h3>
+    <div>${d.notes.length ? d.notes.map(n =>
+      `<div class="note-item"><b>${CS.esc(n.author)}</b> <span class="muted">${CS.time(n.createdAt)}</span><br>${CS.esc(n.content)}</div>`).join('')
+      : '<div class="empty">暂无备注</div>'}</div>
+    <div class="row" style="margin-top:8px">
+      <input id="tkNoteInput" placeholder="添加备注…" style="flex:1"
+             onkeydown="if(event.key==='Enter')tkAddNote()">
+      <button class="small" onclick="tkAddNote()">添加</button>
+    </div>`;
+}
+
+async function tkAssign() {
+  const assignee = document.getElementById('tkAssignee').value.trim();
+  if (!assignee) return CS.toast('请填写处理人', true);
+  try {
+    await CS.post(`/api/admin/tickets/${tkCurrent.id}/assign`, { assignee });
+    CS.toast('已指派');
+    openTicketDrawer(tkCurrent.id); loadTickets();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function tkResolve() {
+  const solution = document.getElementById('tkSolution').value.trim();
+  if (!solution) return CS.toast('请填写解决方案', true);
+  try {
+    await CS.post(`/api/admin/tickets/${tkCurrent.id}/resolve`, { solution });
+    CS.toast('已标记解决');
+    openTicketDrawer(tkCurrent.id); loadTickets();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function tkClose() {
+  try {
+    await CS.post(`/api/admin/tickets/${tkCurrent.id}/close`);
+    CS.toast('已关闭');
+    openTicketDrawer(tkCurrent.id); loadTickets();
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+async function tkAddNote() {
+  const content = document.getElementById('tkNoteInput').value.trim();
+  if (!content) return;
+  try {
+    await CS.post(`/api/admin/tickets/${tkCurrent.id}/notes`, { author: 'admin', content });
+    openTicketDrawer(tkCurrent.id);
+  } catch (e) { CS.toast(e.message, true); }
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTicketDrawer(); });
 
 document.getElementById('token').value = localStorage.getItem(CS.tokenKey) || '';
 refresh();

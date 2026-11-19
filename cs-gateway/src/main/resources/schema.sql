@@ -240,3 +240,9 @@ CREATE TABLE IF NOT EXISTS cs_proactive_event (
     created_at BIGINT      NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_proactive_tenant ON cs_proactive_event (tenant_id, created_at);
+
+-- ride-pro 工单接入增量（幂等，与 db/schema-mysql.sql 保持一致）：
+-- 开放收单口携带用户昵称与问题描述；source 列已有（USER/BOT/AGENT/ride-pro），补来源索引
+ALTER TABLE cs_ticket ADD COLUMN IF NOT EXISTS user_name VARCHAR(64);
+ALTER TABLE cs_ticket ADD COLUMN IF NOT EXISTS description CLOB;
+CREATE INDEX IF NOT EXISTS idx_ticket_source ON cs_ticket (source, created_at);

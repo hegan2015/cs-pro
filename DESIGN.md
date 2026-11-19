@@ -170,6 +170,85 @@ cs-pro (parent, pom)
   → 8. 意图/分类标签落库（供统计与工单预填）；LLM 审计落库（mq profile 异步，失败直写）
 ```
 
+**全分支流程图**（含四道校验、三路分叉、工具循环与全部降级出口；实现见 `ChatService.sendMessage/llmAnswer/faqAnswer`）：
+
+```mermaid
+flowchart TD
+    A["用户发消息<br/>POST /sessions/{id}/messages"] --> B{"① 参数校验<br/>内容≤2000字 · 图片≤3张"}
+    B -->|不合法| X1["400 参数错"]
+    B --> C{"② 会话 ACTIVE?"}
+    C -->|已结束| X2["409 冲突"]
+    C --> D{"③ X-Session-Token 校验"}
+    D -->|无效| X3["403 凭证无效"]
+    D --> E{"④ 租户准入 + 订阅实时判定<br/>冻结409 · expireAt 比对"}
+    E --> F{"⑤ 三路分叉"}
+    F -->|人工接管中| T1["消息排队<br/>不耗额度 · 不调 LLM"] --> T2["返回 null<br/>客服工作台回复经 SSE 送达"]
+    F -->|未订阅| Q1{"免费额度 CAS 扣减<br/>5 条/人/天"}
+    Q1 -->|额度用完| X4["409 / A0409"]
+    Q1 -->|扣减成功| FAQ
+    F -->|已订阅| S1{"⑥ 租户并发信号量<br/>默认 2"}
+    S1 -->|满| X5["429 立即拒绝"]
+    S1 --> S2["⑦ USER 消息先落库"] --> BU{"⑧ 日预算护栏<br/>当日 OK tokens ≥ 预算?"}
+    BU -->|超限| FB
+    BU -->|未超| R1["⑨ RAG 检索 Top3<br/>查询改写 + BM25/向量 RRF"] --> P1["⑩ 组装 Prompt<br/>system 8条规则 + 6000字符历史 + 工具轨迹"]
+    P1 --> LP{"⑪ LLM 工具循环 ≤3轮"}
+    LP -->|tool_calls| TL["工具执行（只读×9）<br/>身份服务端注入 · 归属校验<br/>并行 · 10s超时 · 脱敏"]
+    TL -->|结果注回 + SSE tool| LP
+    LP -->|最终答案 / 超轮兜底| FN["收尾：intent 派生<br/>recordCited · PII 打码"]
+    LP -->|调用异常| ER{"重试退避≤2次<br/>端点熔断 5败/60s · 主备路由"}
+    ER -->|已出流后中断| AB["断流保留部分内容<br/>标注「生成中断」· ABORTED 审计"]
+    ER -->|失败 / 熔断| FB["降级 FAQ + 前缀说明<br/>FALLBACK / CIRCUIT / BUDGET 审计"]
+    FB -.->|回 FAQ 逻辑| FAQ
+    FAQ["FAQ 直答判定<br/>BM25≥1.0 或 cosine≥0.65<br/>命中→原文+引用 · 未命中→热门 Top3"] --> PB
+    FN --> PB
+    AB --> PB
+    PB["BOT 落库 + SSE 广播<br/>message → done（多实例经 RocketMQ）"]
+```
+
+#### 3.1.1 代码级详解：检索 → Prompt → LLM 调用 → 工具循环 → 最终答案
+
+以「我最近那单多少钱？」为例，按数据实际流动顺序展开（行号截至 v1.2.0，以方法名为准）。
+
+**① 检索阶段**（`ChatService.llmAnswer` → `KbService.search`）
+- **查询改写**（`ragQuery/rewriteQuery`）：当前句 + 上一轮用户问题拼接截 60 字，轻量指代消解，0 额外 LLM 调用。
+- **缓存与超采样**：key=`query|limit`、TTL 30s、KB 变更即失效；候选取 `max(limit×3,10)` 给融合留余量。
+- **双通道**：BM25（n-gram 倒排+同义词）与向量（embedding 8100 → Qdrant cosine）各自成榜；任一容器不可达 30s 熔断降级纯 BM25。
+- **RRF 融合**（`VectorIndex.rrfFuse`，k=60）：每条得分 = Σ `1/(60+名次)`，只看名次不看原始分，天然解决 BM25 与 cosine 量纲不可比；取 Top3。
+- **直答分叉**（`faqAnswer`，在进 LLM 之前）：Top1 BM25≥1.0 或 cosine≥0.65 → 直接返回 FAQ 原文，整条 LLM 链路不走。个人数据问题达不到阈值 → 继续。
+
+**② Prompt 组装**（`systemPrompt` + `appendHistoryWithBudget`）
+- **System**：角色 + 8 条硬规则 + **KB Top3 全文注入**（带 kbId、要求引用）——检索结果直接进 system，模型无法选择不查知识库。
+- **历史治理**：跳过本轮已入库首条 USER（当前句末尾单独 append，防重复）；6000 字符预算从近到远放置；被挤出的更早轮次走 `summarizeOlder` 本地压缩（每条取首句≤50 字、总≤600 字，「【更早对话摘要（自动压缩）】」前缀，零 LLM 成本）；上轮工具轨迹以「【上轮工具查询记录】」注回（模型知道已查过什么，不重复调用）；历史图片不重传只留文字标记。
+- **分级 maxTokens**：按意图分类，投诉/其他→`maxTokensReport`(2048)，普通查询→`maxTokensQuery`(512)。
+
+**③ LLM 调用机制**（`callLlm` 包装 → `LlmClient.chat/attempt/doChat`）
+- **审计包装**：计时、记 promptVersion、记**实际使用的模型**（可能已被备用/视觉路由替换）、异步写 cs_llm_call。
+- **全轮流式**：`callLlm` 恒传 token 回调，故每轮都 `stream=true`；工具轮模型只输出 tool_calls 无 content delta，前端自然无打字机输出，最终答案轮逐字推送。
+- **路由链**：主端点失败后，**未出流**才切备用端点（已出流不切，防用户看到重复内容）。
+- **端点内熔断+重试**：熔断按 `baseUrl|model` 分键（供应商互不拖累），5 连败熔 60s，half-open 由到期后下一次真实请求承担；重试仅 429/5xx/传输层异常（4xx 与已出流不重试），指数退避 `backoff×2^(n-1)`；`emitted` 标记一旦出流即禁本端重试也禁切备用。
+- **HTTP 流式解析**：JDK HttpClient `ofLines()` 逐行读 `data:` 块，`delta.content` 边收边推；`delta.tool_calls` 按 index 增量拼接（arguments JSON 分多个 chunk 到达，name/arguments 字符串累加）；`stream_options.include_usage` 收末 chunk token 用量；含图片消息自动路由 visionModel。
+- **断流**：读流中断 → 已生成文本随异常上抛（`markStreamed().withPartialContent`），不整体丢弃。
+
+**④ 工具循环**（`llmAnswer` for-round≤3 → `runTools`）
+- 第 1 轮带全部工具定义，模型返回 tool_calls → 执行 → assistant+tool 结果注回 messages → 下一轮。
+- 执行细节：单工具当前线程、同轮多工具 toolPool **并行**、单个 10s 超时；身份参数服务端覆盖注入（LLM 传的一律不信）、orderId 归属校验（越权返回 A0404 不泄漏存在性）；结果脱敏后进 prompt；每工具发 SSE `tool` 事件供前端展示进度。
+- **最后一轮不带工具定义**——物理剥夺继续查询能力，强制收敛出文字答案；3 轮仍全是 tool_calls 走超轮兜底文案。
+- 特例：`create_ticket` 只返回草稿卡片，用户页面确认才落库（防幻觉建单）。
+
+**⑤ 最终答案收尾**（拿到无 tool_calls 的正文后五道加工）
+1. `deriveIntent` 意图标签落库（供统计与工单预填）；
+2. `recordCited` 解析回答引用的 kbId，FAQ cited_count+1（引用解决率口径）；
+3. `maskOutput` 输出侧 PII 二次打码（工具结果进 prompt 前已脱敏，此为防模型从历史复述敏感串的第二道）；
+4. `finish_reason=length` 追加截断标注；
+5. 组装 BOT 消息（正文+refs+trace≤400 字/条+附件）**先落库**，再 SSE `message`→`done` 推送（多实例经 RocketMQ 广播），前端把打字机临时文本替换为正式气泡。
+
+**⑥ 异常出口**
+- **断流** → 已生成文本同样过打码 + 「（回答生成中断…）」标注落库，审计 ABORTED，用户保住半截答案。
+- **彻底失败**（重试耗尽+备用败/熔断中）→ 本轮检索 Top3 走 FAQ 兜底，审计 FALLBACK/CIRCUIT，会话入坏例队列。
+- 六种审计状态 OK/ERROR/CIRCUIT/BUDGET/FALLBACK/ABORTED 全留痕，管理端 LLM 审计页可查。
+
+> 与 §3.1 全分支流程图、§5.2 降级策略互为视图：流程图看分支，本节看每一步的实现机制与防御点。
+
 ### 3.2 Function Calling 工具清单（全部只读）
 
 | 工具名 | 入参 | 后端接口 | 用途 |
@@ -214,7 +293,8 @@ OPEN/PROCESSING → CANCELLED（仅本人撤单）
 
 - 全部流转 CAS（`WHERE status=旧态`），对齐两系统状态机风格。
 - 建单幂等：`request_id` 唯一键（LLM 建单用 `TICKET-{sessionId}-{seq}` 确定性键，防工具循环重复建单）。
-- 工单携带：会话快照（最近消息）、关联 orderId、分类、优先级（LLM 建议 + 人工可调）、来源（BOT/USER/AGENT）、**图片附件**（v1.2.0，工作台缩略图）。
+- 工单携带：会话快照（最近消息）、关联 orderId、分类、优先级（LLM 建议 + 人工可调）、来源（BOT/USER/AGENT/**ride-pro 开放收单**）、**图片附件**（v1.2.0，工作台缩略图）、**用户昵称 user_name + 问题描述 description**（ride-pro 接入增量）。
+- **开放收单（ride-pro 工单接入，§6.4）**：上游服务端凭 X-Open-Key 代用户建单，source 缺省 ride-pro；管理端「工单」页签 + 坐席工作台展示 ride 上下文（来源徽标/订单深链）。
 - 满意度：会话结束与工单关闭时邀请 1–5 星评价（复用 ride 评价表风格，PK 防重）。
 
 ### 3.5 统计报表
@@ -316,7 +396,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 |---|---|---|
 | cs_session | id(S+seq), user_role, user_id, user_name, tenant_code, status(ACTIVE/ENDED), intent, **takeover**, **access_token**, created_at, ended_at | 一会话一身份；accessToken 仅建会话返回一次 |
 | cs_message | id(MSG+seq), session_id, role(USER/BOT/TOOL/SYSTEM), content CLOB, tool_name, tool_result CLOB, kb_refs, ticket_draft, **tool_trace**, **attachments**, latency_ms, tokens, created_at | 全量留痕；工具轨迹供跨轮记忆 |
-| cs_ticket | id(T+seq), session_id, user_id, category, priority, summary, order_id, status, assignee, request_id UNIQUE, source, solution, **attachments**, created_at, resolved_at, closed_at | CAS 状态机 |
+| cs_ticket | id(T+seq), session_id, user_id, **user_name**, category, priority, summary, **description**, order_id, status, assignee, request_id UNIQUE, source(USER/BOT/AGENT/ride-pro), solution, **attachments**, created_at, resolved_at, closed_at；idx(source,created_at) | CAS 状态机；开放收单携带昵称/描述 |
 | cs_ticket_note | id, ticket_id, author, content, created_at | 处理记录追加 |
 | cs_kb | id(K+seq), question, answer CLOB, category, keywords, enabled, hit_count, **cited_count**, **cited_resolved_count**, updated_at | FAQ + 引用解决率 |
 | cs_kb_revision | id AUTO, kb_id, question, answer, category, keywords, saved_by, saved_at | 每次改写前旧版快照，支持回滚 |
@@ -404,7 +484,7 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | GET | /api/admin/stats/daily?days= | 趋势报表 |
 | GET | /api/admin/sessions?… / /sessions/{id}/messages | 会话审计 + 消息回放 |
 | POST | /api/admin/sessions/{id}/takeover \| /handback \| /messages | 人工接管/交还/客服回复（【人工客服】前缀） |
-| GET | /api/admin/tickets?status&category&page / /tickets/{id} | 工单池 + 详情 |
+| GET | /api/admin/tickets?status&category&source&q&page / /tickets/{id} | 工单池（source 来源 + q 关键字：摘要/工单号/订单号/用户模糊）+ 详情 |
 | POST | /api/admin/tickets/{id}/assign \| /resolve \| /close \| /notes | 认领/解决/关闭/备注（CAS） |
 | GET/POST/PUT/DELETE | /api/admin/kb… | FAQ 增删改查（改后重建索引 + 旧版快照） |
 | GET | /api/admin/kb/{id}/versions | KB 版本列表 |
@@ -437,8 +517,32 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 | GET | /api/open/usage | 本租户订阅状态 + 今日 token 用量 |
 | GET | /api/open/sessions?status&page&size | 本租户会话分页（剥离 accessToken，size≤50） |
 | GET | /api/open/invoices | 本租户账单列表 |
+| POST | /api/open/tickets | **工单收单（ride-pro 接入，唯一写端点）**：requestId 幂等，契约见 §6.4 |
+| GET | /api/open/tickets?userId=&status=&page&size | 按用户回查工单进度（{total,list}，size≤50） |
+| GET | /api/open/tickets/{id} | 工单详情 + 备注时间线（与用户端同构） |
 
-凭证生命周期：管理端生成（ok-32hex + secret 预留签名）→ 租户冻结即 403 → 吊销即 401。只读，无写端点。
+凭证生命周期：管理端生成（ok-32hex + secret 预留签名）→ 租户冻结即 403 → 吊销即 401。除工单收单外均为只读。
+
+### 6.4 ride-pro 工单接入（开放收单口）
+
+ride-pro 后端以租户凭证代用户提交工单并回查进度，cs-pro 单侧升级、ride-pro 零侵入：
+
+- **鉴权**：复用 OpenKeyAuthFilter（X-Open-Key → 租户解析，无效 401/冻结 403/吊销即失效）。凭证由管理端「开放与账单」页签或 `POST /api/admin/open-keys {tenantCode:"ride-pro"}` 生成。
+- **收单契约**：`POST /api/open/tickets`
+
+```json
+{ "requestId": "RIDE-T-20261119-0001", "userId": "P1001", "userName": "张三",
+  "source": "ride-pro", "category": "投诉", "orderId": "O20261119001",
+  "title": "司机绕路投诉", "description": "行程明显绕路，要求核查计价",
+  "attachments": "/uploads/xxx.png,/uploads/yyy.jpg" }
+```
+
+  - 必填：`requestId`（幂等键，唯一约束兜底，重复提交返回同一工单）、`userId`、`title`（落 summary）。
+  - 可选：`userName`/`description`（落新增列 user_name/description）、`source`（缺省 `ride-pro`）、`category`（计价/支付/退款/提现/账号/投诉/其他，缺省 其他）、`orderId`、`attachments`（/uploads/ 相对路径逗号列表，≤3 张，逐项白名单校验）。
+  - 返回与用户端 `POST /api/tickets` 同构：`Result<TicketDTO>`（`id` 即工单号 T+seq，含 status/source/orderId/userName/description 等）。
+- **回查**：`GET /api/open/tickets?userId=`（userId 必填，可选 status，分页 {total,list}）；`GET /api/open/tickets/{id}`（ticket + notes + session 快照）。面向可信上游服务端，数据范围按 userId 界定，凭证租户冻结/吊销即时生效。
+- **处置闭环**：admin.html「工单」页签（status/category/source/关键字筛选 + 分页 + 详情抽屉：来源徽标/订单深链/用户/描述/附件/备注时间线 + 指派/解决/关闭/加备注，调既有 `/api/admin/tickets*`）；agent.html 工单池对 source=ride-pro 显示来源徽标与订单号链接（`http://127.0.0.1:8090/admin.html?order=<orderId>` 新页签）。状态机/幂等/7 天自动关闭与既有工单完全一致。
+- **schema 增量**：cs_ticket 增列 `user_name VARCHAR(64)`、`description CLOB/LONGTEXT` + `idx_ticket_source(source,created_at)`；H2 侧 schema.sql 尾部幂等 ALTER 自动生效，MySQL 存量库按 db/schema-mysql.sql 注释手动 ALTER 一次（profile sql.init.mode=never）。
 
 ---
 
@@ -448,8 +552,8 @@ PENDING ──pp 支付 SUCCESS──▶ PAID ──同事务开通订阅──�
 |---|---|
 | subscription.html 订阅页 | 租户选择/输入 → 订阅状态卡（有效期/剩余天数/套餐）+ 三档套餐权益对比 + 激活码兑换 + 支付开通（payEnabled 时）；chat 页门槛提示一键跳转 |
 | chat.html 用户咨询端 | 身份选择（乘客/司机/商户 + ID + 租户）→ 订阅状态条 → 对话气泡（SSE 打字机 + 工具状态）+ 引用来源 + **图片上传** + 快捷问题 + 一键建单 + **转人工** + 满意度；会话凭证存 localStorage 随请求携带 |
-| agent.html 客服工作台 | 工单池（筛选+分页）→ 详情抽屉（会话快照+关联订单+时间线+**附件缩略图**）→ 认领/解决/关闭；**人工接管会话服务**（接管/回复/交还，5s 轮询） |
-| admin.html 管理看板 | **7 页签全列表真分页（CS.pager）**：运营总览（卡片+趋势+引用率）/ 会话审计 / FAQ 知识库（**版本/回滚**）/ LLM 审计（6 状态过滤）/ 租户与订阅（订阅状态/激活码/订阅单）/ 审计与坏例（**管理审计日志/坏例队列/主动事件**）/ 开放与账单（**open-key 生成吊销/月度出账**） |
+| agent.html 客服工作台 | 工单池（筛选+分页）→ 详情抽屉（会话快照+关联订单+时间线+**附件缩略图**）→ 认领/解决/关闭；**ride-pro 来源徽标 + 订单号深链**（新页签跳 ride 管理端 `?order=<orderId>`，详情展示昵称/描述 ride 上下文）；**人工接管会话服务**（接管/回复/交还，5s 轮询） |
+| admin.html 管理看板 | **8 页签全列表真分页（CS.pager）**：运营总览（卡片+趋势+引用率）/ 会话审计 / **工单（status/category/source/关键字筛选 + 详情抽屉 ride 上下文 + 指派/解决/关闭/备注）** / FAQ 知识库（**版本/回滚**）/ LLM 审计（6 状态过滤）/ 租户与订阅（订阅状态/激活码/订阅单）/ 审计与坏例（**管理审计日志/坏例队列/主动事件**）/ 开放与账单（**open-key 生成吊销/月度出账**） |
 | health.html 健康页 | 组件徽章表（服务/DB/MQ/LLM/ride·payment/主动服务）5s 轮询 + Prometheus 指标文本预览 |
 
 共享 common.css/common.js（api()/toast/抽屉/分页/escapeHtml，直接移植 ride-pro 组件库风格；api() 对会话路径自动附加 X-Session-Token）。

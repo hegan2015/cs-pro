@@ -35,7 +35,7 @@ public class MetricsService {
         gauge(sb, "cs_sessions_total", "会话总数", sessions.count(null, null, null));
         gauge(sb, "cs_sessions_active", "进行中会话数", sessions.count("ACTIVE", null, null));
         gauge(sb, "cs_messages_total", "消息总数", messages.countAll());
-        gauge(sb, "cs_tickets_total", "工单总数", tickets.count(null, null, null));
+        gauge(sb, "cs_tickets_total", "工单总数", tickets.count(null, null, null, null, null));
         gauge(sb, "cs_llm_calls_total", "LLM 调用总数", llmCalls.countAll());
         for (String status : new String[]{"OK", "FALLBACK", "BUDGET", "ABORTED"}) {
             labeled(sb, "cs_llm_calls", "按状态计 LLM 调用", "status", status, llmCalls.countByStatus(status));

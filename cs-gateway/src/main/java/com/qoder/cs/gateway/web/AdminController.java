@@ -119,11 +119,13 @@ public class AdminController {
     public Result<Map<String, Object>> tickets(@RequestParam(required = false) String userId,
                                                @RequestParam(required = false) String status,
                                                @RequestParam(required = false) String category,
+                                               @RequestParam(required = false) String source,
+                                               @RequestParam(required = false) String q,
                                                @RequestParam(defaultValue = "1") int page,
                                                @RequestParam(defaultValue = "10") int size) {
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("total", tickets.count(userId, status, category));
-        out.put("list", tickets.query(userId, status, category, page, Math.min(size, 50)));
+        out.put("total", tickets.count(userId, status, category, source, q));
+        out.put("list", tickets.query(userId, status, category, source, q, page, Math.min(size, 50)));
         return Result.ok(out);
     }
 

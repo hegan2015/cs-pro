@@ -76,6 +76,25 @@ const CS = {
 
   qs(name) { return new URLSearchParams(location.search).get(name); },
 
+  /* ride-pro 管理端基址（订单深链 ?order=<orderId>，与 cs.ride.base-url 默认一致） */
+  rideAdminBase: 'http://127.0.0.1:8090',
+
+  /* 工单来源徽标：ride-pro 高亮，其余（USER/BOT/AGENT…）灰色 */
+  sourceBadge(source) {
+    const s = source || 'USER';
+    return s === 'ride-pro'
+      ? '<span class="badge ride">ride-pro</span>'
+      : `<span class="badge gray">${this.esc(s)}</span>`;
+  },
+
+  /* ride-pro 订单号深链（新页签打开管理端订单）；非 ride-pro 来源或无订单号返回空串 */
+  rideOrderLink(t) {
+    if (!t || !t.orderId || t.source !== 'ride-pro') return '';
+    const url = this.rideAdminBase + '/admin.html?order=' + encodeURIComponent(t.orderId);
+    return `<a class="mono" href="${url}" target="_blank" rel="noopener"
+      onclick="event.stopPropagation()" title="在 ride-pro 管理端查看订单">${this.esc(t.orderId)}</a>`;
+  },
+
   pager(id, total, page, size, fn) {
     const el = document.getElementById(id);
     if (!el) return;

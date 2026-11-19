@@ -64,9 +64,11 @@ public class TicketService {
         t.setId("T" + ids.next("seq_ticket"));
         t.setSessionId(req.getSessionId());
         t.setUserId(userId);
+        t.setUserName(req.getUserName());
         t.setCategory(category);
         t.setPriority(priority);
         t.setSummary(req.getSummary().trim());
+        t.setDescription(req.getDescription());
         t.setOrderId(req.getOrderId());
         t.setAttachments(com.qoder.cs.core.biz.UploadService.validateList(req.getAttachments()));
         t.setRequestId(req.getRequestId());
@@ -101,11 +103,27 @@ public class TicketService {
     }
 
     public List<TicketDTO> query(String userId, String status, String category, int page, int size) {
-        return ticketMapper.query(userId, status, category, (page - 1) * size, size);
+        return query(userId, status, category, null, null, page, size);
     }
 
     public long count(String userId, String status, String category) {
-        return ticketMapper.count(userId, status, category);
+        return count(userId, status, category, null, null);
+    }
+
+    /** 扩展筛选：source 来源系统 + q 关键字（摘要/工单号/订单号/用户模糊匹配），空白视为不筛。 */
+    public List<TicketDTO> query(String userId, String status, String category, String source, String q,
+                                 int page, int size) {
+        return ticketMapper.query(blankToNull(userId), blankToNull(status), blankToNull(category),
+                blankToNull(source), blankToNull(q), (page - 1) * size, size);
+    }
+
+    public long count(String userId, String status, String category, String source, String q) {
+        return ticketMapper.count(blankToNull(userId), blankToNull(status), blankToNull(category),
+                blankToNull(source), blankToNull(q));
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
     }
 
     public TicketDTO assign(String id, String assignee) {
