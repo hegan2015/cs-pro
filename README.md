@@ -1,6 +1,6 @@
 # cs-pro 智能客服系统设计文档
 
-版本 v1.2.0（商用底座 + 六特性批已交付）｜ 2026-11-18 ｜ 完整设计见 [DESIGN.md](DESIGN.md)（字段级数据字典、接口契约、安全细节以 DESIGN 为准），本版实施流程与验证记录见 [UPGRADE-v1.2.0.md](UPGRADE-v1.2.0.md)（上版 [UPGRADE-v1.1.0.md](UPGRADE-v1.1.0.md)）
+版本 v1.2.0（商用底座 + 六特性批已交付）｜ 2026-11-18 ｜ 完整设计见 [DESIGN.md](DESIGN.md)（字段级数据字典、接口契约、安全细节以 DESIGN 为准），本版实施流程与验证记录见 [UPGRADE-v1.2.0.md](UPGRADE-v1.2.0.md)（上版 [UPGRADE-v1.1.0.md](UPGRADE-v1.1.0.md)）；文档套：[REQUIREMENTS.md](REQUIREMENTS.md)（需求基线）/ [ARCHITECTURE.md](ARCHITECTURE.md)（架构视图）/ [DETAILED-DESIGN.md](DETAILED-DESIGN.md)（类/方法级详细设计）
 
 定位：为 ride-pro（打车）与 payment-pro（支付）提供**统一智能客服入口**，覆盖「租户订阅准入 → 机器人自动问答（LLM）→ 业务只读查询 → 工单与统计」闭环。
 
@@ -74,7 +74,7 @@ Maven 六模块（单运行进程 cs-gateway，可多实例）：
 ### 4.2 Function Calling 工具（全部只读，白名单硬编码）
 `query_ride_order` / `list_ride_orders` / `query_wallet` / `query_ledger` / `query_withdraws` / `pricing_rules`（ride REST）；`query_pp_trade` / `query_pp_balance`（payment OpenAPI 验签）；`create_ticket`（**返回草稿卡片，用户确认才落单**，防幻觉建单）。KB 检索不暴露为工具，由 RAG 前置注入 Top3 代替。
 
-工具安全三原则：身份参数服务端注入（LLM 不可决定）+ orderId 归属校验（防越权，不匹配返回 A0404 不泄漏存在性）；无写工具；结果脱敏后进 prompt（手机号掩码、卡号前 6 后 4），**LLM 输出侧另做 PII 打码**（mask-pii）。
+工具安全三原则：身份参数服务端注入（LLM 不可决定）+ orderId 归属校验（防越权，不匹配返回 A0404 不泄漏存在性）；无写工具；结果脱敏后进 prompt（phone 类字段前 3 后 4），**LLM 输出侧另做 PII 打码**（mask-pii：身份证/银行卡/手机号三正则，银行卡前 4 后 4）。
 
 ### 4.3 知识库 RAG 与知识运营
 中文 n-gram 倒排 + BM25 打分 + 12 组同义词扩展，Top3 注入 system prompt；KB 变更即重建索引。**混合检索（2026-11-18 用户拍板引入向量库）**：Qdrant 单容器（共享栈 claim-shared，6333）+ 本地 ONNX Embedding 容器（cs-embedding，8100，bge-small-zh-v1.5 int8，512 维，模型烘进镜像），BM25 与向量双榜 **RRF 融合**（k=60）；FAQ 直答双阈值（BM25≥1.0 或 cosine≥0.65，后者按 int8 模型实测校准：同主题改写 0.66~0.81、跨主题≤0.50）。**旁路降级**：任一容器不可达→纯 BM25，失败熔断 30s；启动自动补建索引，管理台可一键重建（`POST /api/admin/kb/reindex`）与状态查看（`GET /api/admin/kb/vector-status`）；`CS_VECTOR_ENABLED=false` 整体关闭。**运营闭环**：每次改写前旧版快照（cs_kb_revision）支持一键回滚；差评/降级会话自动入**坏例队列**；**引用解决率**统计（cited_count/cited_resolved_count）回答"哪条 FAQ 真正管用"。
@@ -228,6 +228,9 @@ cs-pro/
 ├── db/schema-mysql.sql        # MySQL 建表（幂等；商用模式手动执行）
 ├── .github/workflows/ci.yml   # CI：构建 + 单测 + jar 工件
 ├── DESIGN.md                  # 完整设计（权威）
+├── REQUIREMENTS.md            # 需求说明书（FR/NFR/验收映射）
+├── ARCHITECTURE.md            # 架构设计（上下文/部署/弹性/安全视图）
+├── DETAILED-DESIGN.md         # 详细设计（类/方法/算法/配置/错误码）
 ├── README.md                  # 本文档（与 DESIGN 同步）
 ├── UPGRADE-v1.2.0.md          # v1.2.0 实施流程与验证记录（含 v1.1.0 链接）
 ├── COLLABORATION.md           # 用户指导 AI 开发要点复盘（新会话先读）

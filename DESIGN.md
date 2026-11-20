@@ -1,6 +1,6 @@
 # cs-pro 智能客服系统设计方案
 
-版本 v1.2.0（商用底座 M0–M4 + 特性批 A–F 已交付）｜ 2026-11-18 ｜ 本版实施流程与验证记录见 [UPGRADE-v1.2.0.md](UPGRADE-v1.2.0.md)（上版 [UPGRADE-v1.1.0.md](UPGRADE-v1.1.0.md)）
+版本 v1.2.0（商用底座 M0–M4 + 特性批 A–F 已交付）｜ 2026-11-18 ｜ 本版实施流程与验证记录见 [UPGRADE-v1.2.0.md](UPGRADE-v1.2.0.md)（上版 [UPGRADE-v1.1.0.md](UPGRADE-v1.1.0.md)）；需求基线见 [REQUIREMENTS.md](REQUIREMENTS.md)，架构视图见 [ARCHITECTURE.md](ARCHITECTURE.md)，类/方法级实现设计见 [DETAILED-DESIGN.md](DETAILED-DESIGN.md)
 定位：为 ride-pro（打车）与 payment-pro（支付）提供统一的智能客服入口，覆盖「租户订阅准入 → 机器人自动问答（LLM）→ 业务查询 → 工单与统计」闭环。
 
 > 技术选型已拍板（§1.4）；订阅模型已拍板（§1.5，详见 §3A）。剩余待确认事项见 §12。
@@ -268,7 +268,36 @@ flowchart TD
 **工具安全三原则**：
 1. 身份参数（userId/passengerId/driverId）**不由 LLM 决定**，由会话上下文服务端注入，LLM 只能传业务参数（orderId 等），且 orderId 归属校验（订单 passenger_id/driver_id 必须匹配会话身份，防越权查他人订单）。
 2. 工具白名单硬编码，LLM 无法调用未注册工具；无写工具。
-3. 工具结果脱敏后进 prompt（手机号掩码、卡号前 6 后 4），与两系统脱敏口径一致。
+3. 工具结果脱敏后进 prompt（ToolService.mask 递归掩码 phone 类字段：前 3 后 4）；LLM 输出侧另有 maskPii 三正则（身份证前 3 后 4 / 银行卡前 4 后 4 / 手机号前 3 后 4），详见 DETAILED-DESIGN §8.4。
+
+#### 3.2.1 模型如何选择工具（Function Calling 选择机制）
+
+**不是模型"预先知道"，而是每次请求把一份带说明书的工具菜单塞给它**（OpenAI 协议 `tools` 字段，`ToolService.specsFor` 组装、`LlmClient.doChat` 序列化）。模型经 function-calling 专项训练，选择依据是**语义比对用户问题 vs 每个工具的 description**——没有规则引擎、没有 if-else 匹配。
+
+**菜单三件套**（每工具 = name + description + parameters JSON Schema）：
+
+```json
+{"type": "function", "function": {
+  "name": "list_ride_orders",
+  "description": "查询当前用户的打车订单列表，可按状态过滤。",
+  "parameters": {"type": "object", "properties": {
+      "status": {"description": "可选：DISPATCHING/ACCEPTED/…/REFUNDED"},
+      "page":   {"type": "integer", "description": "页码，默认 1"}}}}
+```
+
+**description 写法即选择准确率**（specsFor 实际采用的三个技巧）：
+- **排除式引导防混选**：`query_ride_order` 描述专门写「用户只想看"我的订单有哪些/列表"时应改用 list_ride_orders」——两订单工具语义相近，不加此句模型常选错；
+- **枚举值兜参数正确性**：status 列全 9 个合法值、category 列全 7 个分类，模型才知道 arguments 填 `COMPLETED` 而非"已完成"；
+- **行为约束**：`create_ticket` 写明「不要重复调用」「需用户确认后才真正创建」，压住反复建单倾向。
+
+**菜单动态裁剪**（白名单第一道防线）：specsFor 按会话角色组装——乘客/司机见 6 个 ride 工具；MERCHANT 且 payment 已入驻才见 pp 两个；create_ticket 人人有。**模型没在菜单里的工具不知道其存在，想调也调不出**。
+
+**选错的三道兜底**（选择权在模型、正确性在服务端）：
+1. `execute` 按 name 分发，未注册名返回 `{"error":...}` JSON 注回，对话不崩；
+2. 参数 schema 故意不含 userId——身份永远服务端注入；
+3. orderId 归属校验，越权查询返回 A0404。
+
+**匹配示例**：用户问「上次的退款到账了吗」→ 模型扫菜单，"退款"语义命中 `query_ledger` 描述（"充值/支付/**退款**/提现等流水"）而非 query_withdraws → 产出 `{"name":"query_ledger","arguments":"{\"bizType\":\"REFUND_CREDIT\"}"}`（枚举值即从描述所抄）→ 执行注回真实流水 → 下一轮综合出「您的退款 12.5 元已于 11-17 到账」。若选偏（如误调 query_withdraws），结果真实但内容不贴切、正文会露馅——此类坏例进坏例队列，驱动 description 迭代调优。
 
 ### 3.3 知识库 RAG（BM25 + 向量混合检索）
 
@@ -580,7 +609,7 @@ ride-pro 后端以租户凭证代用户提交工单并回查进度，cs-pro 单�
 ### 8.4 敏感信息
 
 - apiKey/secret 不入日志/DTO；LLM 请求日志只记 token 数与状态；accessToken 仅建会话返回一次。
-- 进 prompt 的业务数据脱敏（手机号/卡号）；**LLM 输出侧 PII 打码**（mask-pii）；会话消息落库保留原文供审计，管理端展示脱敏。
+- 进 prompt 的业务数据脱敏（工具侧 phone 类字段前 3 后 4）；**LLM 输出侧 PII 打码**（mask-pii：身份证/银行卡/手机号三正则，银行卡前 4 后 4）；会话消息落库保留原文供审计，管理端展示脱敏。
 - prompt 注入软防线 + 工具白名单硬防线（§5.3）；**管理变更全量审计**（cs_admin_audit，actor/action/target/detail）。
 
 ### 8.5 幂等与一致性（客服自身）

@@ -78,4 +78,4 @@
 - 商用模式：`docker compose -f ../ops-pro/deploy/middleware-compose.yml up -d` → `docker compose -f deploy/vector-compose.yml up -d --build`（向量检索，可选；同 claim-shared 栈，**勿 --remove-orphans**）→ `mysql … < db/schema-mysql.sql` → `./migrate-to-mysql.sh`（可选，先停服务）→ `CS_MQ_ENABLED=true ./run.sh`（**mysql 已是默认**，无需 CS_DB_MODE）；第二实例 CS_PORT=8099；零依赖回退 CS_DB_MODE=h2（向量自动降级 BM25）。共享栈密码在仓库外 ~/.config/claim-shared/env；embedding 模型预下载 `deploy/embedding/download-model.sh`（ModelScope 源）。
 - 入驻 payment-pro：`./integrate-payment.sh`（payEnabled=false 时 pp 8443 需在跑）。
 - LLM 日志关键字：`LLM OK model=deepseek-flash`、`LLM tool ... ok=true/false`。
-- 文档套件：README（概览）/ DESIGN（权威契约）/ UPGRADE-v1.1.0 / UPGRADE-v1.2.0（实施与验证记录）/ 本文件（协作复盘），交付前同步。
+- 文档套件（2026-11-20 升级）：README（概览）/ DESIGN（权威契约）/ REQUIREMENTS（需求基线）/ ARCHITECTURE（架构视图）/ DETAILED-DESIGN（类/方法级）/ UPGRADE-v1.1.0 / UPGRADE-v1.2.0（实施与验证记录）/ 本文件（协作复盘），**缺的独立成文、写交付态，补完才推送**。
