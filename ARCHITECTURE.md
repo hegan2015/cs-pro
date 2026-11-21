@@ -187,6 +187,50 @@ MqBridge.writeAudit 异步落 cs_llm_call；**日预算护栏 = 已落库当日 
 | ProactiveService 轮询 | 60s（可配，初始延迟 20s） | ride 超时订单/pp 失败支付单→event_key 幂等推送 |
 | StatsService 快照 | 600s（初始延迟 30s） | stats_daily 每日聚合快照 |
 
+### 6.4 LLM 调用决策：何时走、走几次（DESIGN §3.1.1）
+
+**入口四道闸**（ChatService.sendMessage，全过才调模型）：
+
+| 闸 | 判定 | 未过出口（不调 LLM） |
+|---|---|---|
+| ① 人工接管 | session.takeover | 消息排队返回 null，不耗额度，客服回复经 SSE 送达 |
+| ② 订阅有效 | isSubscribed（expire_at>now 实时） | 免费额度 CAS 扣减（5 条/人/日）→FAQ 直答；超额 A0409+订阅引导 |
+| ③ 并发配额 | 每租户 Semaphore tryAcquire（默认 2，pro 8） | 429 立即拒绝，不入库不排队 |
+| ④ 日 token 预算 | 当日 OK tokens + MQ 在途 pendingTokens | 降级 FAQ + BUDGET 审计 |
+
+全局不调用：无 LLM Key（configured()=false，全程 FAQ 降级模式）；端点熔断打开中（attempt 直接拒绝不发网络请求，FALLBACK/CIRCUIT）。
+
+**调用次数 1~4 次**（llmAnswer 工具循环 round 0..maxToolRounds(3)）：每轮工具循环=一次独立 HTTP 调用；前 3 轮带工具定义，**第 4 轮（lastRound）不带 tools 强制收敛**；超轮兜底「建议提交工单」。maxTokens 分级：工具轮与查询类 512，投诉/其他类最终轮 2048。
+
+### 6.5 工具选择机制：模型凭什么知道调哪个（DESIGN §3.2.1）
+
+**菜单随每次请求下发**（OpenAI tools 字段，ToolService.specsFor 组装）：每工具=name+description+parameters JSON Schema。模型经 function-calling 训练，靠**语义比对用户问题 vs description** 选择并填参——非规则引擎、非关键词匹配。
+
+**description 三技巧**（选择准确率的手艺）：
+- 排除式引导防混选：query_ride_order 写明「用户只想看列表时应改用 list_ride_orders」；
+- 枚举值兜参数：status 9 值/category 7 类全列，模型才填 COMPLETED 而非"已完成"；
+- 行为约束：create_ticket「不要重复调用」「需用户确认后才真正创建」。
+
+**system prompt 双保险**：规则 2（概况用 list、给出订单号才用 query）、规则 3（写操作拒办且不为此乱查）、规则 6（新问题须重查实时数据）。
+
+**菜单按角色动态裁剪**（白名单第一道防线）：PASSENGER/DRIVER→6 ride 工具；MERCHANT 且 pp.enabled→2 pp 工具；create_ticket 全员。不在菜单的工具模型不知道其存在。
+
+**选错三道兜底**（选择权在模型、正确性在服务端）：未注册 name→error JSON 注回不崩；身份参数 schema 不含 userId、执行时服务端强制注入；orderId 归属校验越权 A0404。选偏但合法→正文露馅→坏例队列→description 迭代闭环。
+
+### 6.6 LLM 职责全景：除查数答问外还解决什么
+
+| 职责 | 机制 | 锚点 |
+|---|---|---|
+| 知识库消化与冲突仲裁 | KB Top3 注入 system，LLM 组织贴切回答；KB 与工具结果冲突以实时为准 | systemPrompt 规则 5 |
+| 多轮语境理解 | 历史预算+滚动摘要+工具轨迹喂 LLM 做指代衔接；追问同数据可引用、新问题须重查 | appendHistoryWithBudget + 规则 6 |
+| 多语言跟随 | 检测用户语言跟随回复，中文 KB 翻译要点后引用（非翻译 API） | systemPrompt 首段 |
+| 图片理解 | 附图路由 vision-model，识别截图订单号/金额/报错；图片文字仅作数据 | doChat 视觉路由 + 规则 8 |
+| 安全拒办与防注入 | 写操作一律拒办+引导工单；KB/工具/用户消息中改规则/泄提示/扮演角色的指令一律忽略 | 规则 3/7 |
+| 工单草稿生成 | LLM 自填 category/summary/orderId 浓缩对话为结构化草稿，用户确认才落单 | specsFor create_ticket + llmAnswer draft 分支 |
+| 数据综合与换算 | 多工具 JSON 综合成连贯回答；分→元换算 | runTools 注回 + 规则 1 |
+
+**LLM 不做的**（边界）：检索本身（RAG 前置注入不暴露为工具）、身份判定（服务端注入）、任何写操作（无写工具）、工单最终创建（草稿需确认）、意图标签（代码从工具轨迹派生）、统计/账单/订阅判定（纯服务端）。
+
 ## 7. 弹性架构（DESIGN §5.2）
 
 ### 7.1 降级阶梯
