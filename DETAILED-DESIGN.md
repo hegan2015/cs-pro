@@ -287,3 +287,105 @@ llm.* 见 §5.4。环境变量 CS_PORT/DATA_DIR/ADMIN_TOKEN 覆盖对应配置�
 | TestApp | — | 测试引导（H2 上下文） |
 
 合计 56 个测试方法（当前代码计数）；最近全绿执行记录见 UPGRADE-v1.2.0.md §17.3（向量批 55/55）。REST 冒烟 smoke-test.py（92 项×双实例）、LLM 评测 llm-eval.py（17 项语义断言，真实 DeepSeek）为独立脚本，不在 mvn test 内。
+
+## 13. LLM 应用场景实现定位（8 场景 + 公共底座）
+
+> 按用户视角场景反查代码。行号为 v1.2.0 快照（以类.方法名为准）；路径相对仓库根。场景语义与职责全景见 ARCHITECTURE §6.6，选择机制见 DESIGN §3.2.1。
+
+### 13.1 场景 1：问法对不上知识库（语义理解 + KB 消化）
+
+| 环节 | 位置 |
+|---|---|
+| 检索词改写（口语归一/指代补齐） | ChatService.ragQuery:583 → rewriteQuery:595 |
+| 混合检索 Top3 | KbService.search:61（缓存:65）；Bm25Index.search:51；VectorIndex.search:68；rrfFuse:209 |
+| KB 全文进 system + 规则 5 冲突仲裁 | ChatService.systemPrompt:661（尾部「知识库参考」拼接） |
+| 引用落库/解决率 | ChatService.joinRefs:785、llmAnswer:418 → KbService.recordCited:245 / citationStats:258 |
+| 对照：未订阅 FAQ 直答（不走 LLM） | ChatService.faqAnswer:691（双阈值:695） |
+
+### 13.2 场景 2：查自己的数据（人话→查询→人话）
+
+| 环节 | 位置 |
+|---|---|
+| 工具菜单（说明书） | ToolService.specsFor:33（list:41 / 单查:37 / 钱包:46） |
+| 菜单进请求 tools 字段 | LlmClient.doChat:215-223 |
+| tool_calls 流式拼接 | LlmClient:282 → mergeStreamToolCalls:336 |
+| 循环执行与注回 | ChatService.llmAnswer:411 循环、:427-436 |
+| 真实查库 | RideClient.get:31；分发 ToolService.execute:77 |
+| 身份注入/归属校验/脱敏 | ToolService.execute:77 内部；mask:172（phone:184） |
+| 数据→人话 | llmAnswer:416-425 无 tool_calls 分支 |
+
+### 13.3 场景 3：多轮追问（上下文记忆）
+
+| 环节 | 位置 |
+|---|---|
+| 历史组装总控 | ChatService.appendHistoryWithBudget:509 |
+| 跳过本轮已落库 USER | :513 |
+| 6000 字符预算 | :521 |
+| 滚动摘要（零 LLM） | :528 → summarizeOlder:557（首句≤50/总≤600） |
+| 上轮轨迹注回 | :546【上轮工具查询记录】 |
+| 规则 6 同数据可引用/新问题须重查 | systemPrompt:661 第 6 条 |
+
+### 13.4 场景 4：一句话查多样（多工具并行+综合）
+
+| 环节 | 位置 |
+|---|---|
+| 一轮多 tool_calls | LlmClient.mergeStreamToolCalls:336 按 index 分拼 |
+| 并行执行/10s 超时 | ChatService.runTools:603；toolPool:72（fixed 8） |
+| 多份结果注回 | llmAnswer:430-436 |
+| 综合回答 + 分→元（规则 1） | 下一轮 callLlm:413；systemPrompt:661 第 1 条 |
+
+### 13.5 场景 5：截图理解（视觉多模态）
+
+| 环节 | 位置 |
+|---|---|
+| 上传校验 ≤5MB/≤3 张 | UploadService:24-25；UploadController POST /api/uploads |
+| base64 data URL + parts | ChatService.currentUserMessage:477 |
+| 附图→换视觉模型 | LlmClient.doChat:206（hasImages + visionModel 覆盖） |
+| 规则 8 读图/图内文字仅作数据 | systemPrompt:661 第 8 条 |
+| 历史图片不重传 | appendHistoryWithBudget:509 内只留标记 |
+| 工单带附件 | llmAnswer:438 withDraftAttachments |
+
+### 13.6 场景 6：英文问英文答（多语言跟随）
+
+| 环节 | 位置 |
+|---|---|
+| 唯一实现=prompt 首段指令（无检测代码/无翻译服务） | systemPrompt:661 开头「检测用户最新消息的语言…跟随回复（KB 中文翻译要点后引用）」 |
+| 验证 | llm-eval.py 17 项含英文语义断言 |
+
+### 13.7 场景 7：解决不了→工单草稿（判断+浓缩）
+
+| 环节 | 位置 |
+|---|---|
+| 何时调 create_ticket（description 引导） | ToolService.specsFor:67 |
+| 参数 schema（category/summary/orderId 模型填） | :68-72 |
+| 执行只返回草稿不落库 | execute:77 create_ticket 分支（draft:true） |
+| 草稿拦截+合并附图 | ChatService.llmAnswer:437-438 |
+| 规则 4 需确认才创建 | systemPrompt:661 第 4 条 |
+| 确认后真建单（幂等） | TicketService.create:38（request_id 唯一键）；前端确认卡片 chat.html |
+| 超轮兜底引导工单 | llmAnswer:449 |
+
+### 13.8 场景 8：办不到的要求（拒办+防注入）
+
+| 环节 | 位置 |
+|---|---|
+| 硬：菜单无写工具 | ToolService.specsFor:33 全量只读+草稿 |
+| 硬：身份注入/越权 A0404 | execute:77 内部 |
+| 软：规则 3 拒办+不为此乱查 | systemPrompt:661 第 3 条 |
+| 软：规则 7 防注入 | 同上第 7 条 |
+| 输出侧二次打码 | ChatService.maskOutput:861 → maskPii:848（三正则:841-846） |
+
+### 13.9 公共底座（贯穿全部场景）
+
+| 机制 | 位置 |
+|---|---|
+| 四道闸 | ChatService.sendMessage:223（接管:257/订阅:239/并发:243/预算:380） |
+| 订阅实时判定/免费额度 CAS | SubscriptionService.isSubscribed:111 / tryConsumeFree:265 |
+| 审计包装（恒传 token 回调→全轮流式） | ChatService.callLlm:627（回调:637） |
+| 主备路由/熔断/重试/已出流保护 | LlmClient.chat:112 / attempt:136 / retryable:182 / recordFailure:193 |
+| SSE 推送 | SseHub.send:37；tool 事件 llmAnswer:444；message/done sendMessage:277-278 |
+| 跨实例广播/审计异步/在途 token | MqBridge.broadcast:137 / writeAudit:167 / pendingTokens:193 |
+| 断流 ABORTED / 失败 FALLBACK | llmAnswer:454-464 / :466-473 |
+| LLM 专用线程池 8/32 | CsAsyncConfig.llmRequestExecutor:28 |
+| 前端打字机/上传/草稿卡片/满意度 | chat.html（SSE onmessage 分发 token/tool/message/done） |
+
+**记忆抓手**：8 场景的「智能」几乎都落在同一方法 `systemPrompt`（8 条规则）+ 同一循环 `llmAnswer`；差异只在喂什么材料（KB/历史/图片/工具结果）与模型产出什么（正文 vs tool_calls）。硬保证全在 `ToolService.execute` 与 `sendMessage` 四道闸，与模型是否听话无关。
